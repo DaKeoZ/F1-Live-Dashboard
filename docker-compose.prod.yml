@@ -7,10 +7,10 @@ services:
   backend:
     image: ghcr.io/${GHCR_OWNER}/f1-dashboard-backend:latest
     ports:
-      - "127.0.0.1:8000:8000"   # exposé uniquement en local → Nginx proxie
+      - "127.0.0.1:9797:9797"   # exposé uniquement en local → Nginx proxie
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9797/')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -18,9 +18,9 @@ services:
   frontend:
     image: ghcr.io/${GHCR_OWNER}/f1-dashboard-frontend:latest
     ports:
-      - "127.0.0.1:8501:8501"   # exposé uniquement en local → Nginx proxie
+      - "127.0.0.1:9798:9798"   # exposé uniquement en local → Nginx proxie
     environment:
-      - API_BASE_URL=http://backend:8000
+      - API_BASE_URL=http://localhost:9797
     depends_on:
       backend:
         condition: service_healthy
