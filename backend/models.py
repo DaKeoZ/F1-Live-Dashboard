@@ -3,6 +3,8 @@ Modèles Pydantic pour les données F1.
 Servent à la fois de schémas de validation et de contrats de réponse API.
 """
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 
@@ -70,3 +72,52 @@ class ConstructorStandingsResponse(BaseModel):
     round: int | None = Field(None, description="Dernier round inclus dans le classement")
     total: int
     standings: list[ConstructorStanding]
+
+
+# ---------------------------------------------------------------------------
+# Calendrier & prochaine course
+# ---------------------------------------------------------------------------
+
+
+class CircuitLocation(BaseModel):
+    locality: str
+    country: str
+    lat: float
+    long: float
+
+
+class Circuit(BaseModel):
+    circuit_id: str
+    name: str
+    location: CircuitLocation
+
+
+class SessionInfo(BaseModel):
+    """Date et heure UTC d'une session (qualifs, course, sprint…)."""
+
+    datetime_utc: datetime = Field(..., description="Date et heure UTC de la session")
+
+
+class Countdown(BaseModel):
+    """Compte à rebours calculé jusqu'à la prochaine session imminente."""
+
+    target_session: str = Field(..., description="Nom de la session visée (ex: 'Qualifying', 'Race')")
+    target_datetime_utc: datetime
+    days: int = Field(..., ge=0)
+    hours: int = Field(..., ge=0, le=23)
+    minutes: int = Field(..., ge=0, le=59)
+    total_seconds: int = Field(..., ge=0)
+
+
+class NextRaceResponse(BaseModel):
+    """Réponse complète de l'endpoint /race/next."""
+
+    season: str
+    round: int
+    race_name: str
+    circuit: Circuit
+    race: SessionInfo
+    qualifying: SessionInfo
+    sprint: SessionInfo | None = Field(None, description="Présent uniquement lors d'un sprint weekend")
+    sprint_qualifying: SessionInfo | None = Field(None, description="Qualifications sprint")
+    countdown: Countdown

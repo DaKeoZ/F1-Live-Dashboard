@@ -3,15 +3,22 @@ Client HTTP pour récupérer les données F1 via l'API Jolpica (compatible Ergas
 Documentation : https://api.jolpi.ca/
 """
 
+from datetime import datetime, timezone
+
 import httpx
 
 from models import (
+    Circuit,
+    CircuitLocation,
     ConstructorInfo,
     ConstructorStanding,
     ConstructorStandingsResponse,
+    Countdown,
     DriverInfo,
     DriverStanding,
     DriverStandingsResponse,
+    NextRaceResponse,
+    SessionInfo,
 )
 
 BASE_URL = "https://api.jolpi.ca/ergast/f1"
@@ -103,6 +110,123 @@ def get_driver_standings(season: str = "current") -> DriverStandingsResponse:
         round=int(standings_list["round"]) if standings_list.get("round") else None,
         total=len(parsed),
         standings=parsed,
+    )
+
+
+def get_next_race() -> NextRaceResponse | None:
+    """
+    Identifie la prochaine course de la saison courante à partir de la date actuelle
+    et retourne ses détails avec un compte à rebours vers la session imminente.
+
+    Returns:
+        NextRaceResponse ou None si la saison est terminée.
+    """
+    url = f"{BASE_URL}/current.json"
+    data = _get(url)
+    races: list[dict] = data["MRData"]["RaceTable"]["Races"]
+    now_utc = datetime.now(timezone.utc)
+
+    next_race_raw = _find_next_race(races, now_utc)
+    if next_race_raw is None:
+        return None
+
+    return _parse_next_race(next_race_raw, now_utc)
+
+
+def _find_next_race(races: list[dict], now_utc: datetime) -> dict | None:
+    """Retourne la première course dont la date de course est >= aujourd'hui UTC."""
+    for race in races:
+        race_dt = _parse_session_dt(race["date"], race.get("time", "00:00:00Z"))
+        if race_dt >= now_utc:
+            return race
+    return None
+
+
+def _parse_session_dt(date_str: str, time_str: str) -> datetime:
+    """Combine une date ISO et une heure UTC en datetime aware."""
+    raw = f"{date_str}T{time_str.rstrip('Z')}+00:00"
+    return datetime.fromisoformat(raw)
+
+
+def _build_countdown(sessions: dict[str, datetime], now_utc: datetime) -> Countdown:
+    """
+    Sélectionne la session imminente (la plus proche dans le futur)
+    et calcule le compte à rebours.
+    """
+    future_sessions = {name: dt for name, dt in sessions.items() if dt > now_utc}
+
+    if not future_sessions:
+        # Toutes les sessions sont passées — on pointe vers la course par défaut
+        target_name = "Race"
+        target_dt = sessions["Race"]
+    else:
+        target_name = min(future_sessions, key=lambda n: future_sessions[n])
+        target_dt = future_sessions[target_name]
+
+    delta = target_dt - now_utc
+    total_seconds = max(0, int(delta.total_seconds()))
+    total_minutes, secs = divmod(total_seconds, 60)
+    total_hours, mins = divmod(total_minutes, 60)
+    days, hours = divmod(total_hours, 24)
+
+    return Countdown(
+        target_session=target_name,
+        target_datetime_utc=target_dt,
+        days=days,
+        hours=hours,
+        minutes=mins,
+        total_seconds=total_seconds,
+    )
+
+
+def _parse_next_race(raw: dict, now_utc: datetime) -> NextRaceResponse:
+    """Convertit une entrée brute de course en NextRaceResponse avec compte à rebours."""
+    circuit_raw = raw["Circuit"]
+    loc_raw = circuit_raw["Location"]
+
+    circuit = Circuit(
+        circuit_id=circuit_raw["circuitId"],
+        name=circuit_raw["circuitName"],
+        location=CircuitLocation(
+            locality=loc_raw["locality"],
+            country=loc_raw["country"],
+            lat=float(loc_raw["lat"]),
+            long=float(loc_raw["long"]),
+        ),
+    )
+
+    race_dt = _parse_session_dt(raw["date"], raw.get("time", "00:00:00Z"))
+    qual_raw = raw["Qualifying"]
+    qual_dt = _parse_session_dt(qual_raw["date"], qual_raw.get("time", "00:00:00Z"))
+
+    sessions: dict[str, datetime] = {
+        "Qualifying": qual_dt,
+        "Race": race_dt,
+    }
+
+    sprint: SessionInfo | None = None
+    sprint_qualifying: SessionInfo | None = None
+
+    if "Sprint" in raw:
+        sprint_dt = _parse_session_dt(raw["Sprint"]["date"], raw["Sprint"].get("time", "00:00:00Z"))
+        sprint = SessionInfo(datetime_utc=sprint_dt)
+        sessions["Sprint"] = sprint_dt
+
+    if "SprintQualifying" in raw:
+        sq_dt = _parse_session_dt(raw["SprintQualifying"]["date"], raw["SprintQualifying"].get("time", "00:00:00Z"))
+        sprint_qualifying = SessionInfo(datetime_utc=sq_dt)
+        sessions["SprintQualifying"] = sq_dt
+
+    return NextRaceResponse(
+        season=raw["season"],
+        round=int(raw["round"]),
+        race_name=raw["raceName"],
+        circuit=circuit,
+        race=SessionInfo(datetime_utc=race_dt),
+        qualifying=SessionInfo(datetime_utc=qual_dt),
+        sprint=sprint,
+        sprint_qualifying=sprint_qualifying,
+        countdown=_build_countdown(sessions, now_utc),
     )
 
 

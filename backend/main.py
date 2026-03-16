@@ -7,8 +7,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
-from api_client import get_constructor_standings, get_driver_standings
-from models import ConstructorStandingsResponse, DriverStandingsResponse
+from api_client import get_constructor_standings, get_driver_standings, get_next_race
+from models import ConstructorStandingsResponse, DriverStandingsResponse, NextRaceResponse
 
 app = FastAPI(
     title="F1 Live Dashboard API",
@@ -67,5 +67,22 @@ def constructor_standings(season: str = _SEASON_QUERY):
     """
     try:
         return get_constructor_standings(season=season)
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        _handle_httpx_errors(exc)
+
+
+@app.get("/race/next", response_model=NextRaceResponse)
+def next_race():
+    """
+    Retourne la prochaine course de la saison en cours avec :
+    - Nom du Grand Prix, circuit et localisation
+    - Horaires UTC de la qualification et de la course (+ sprint si applicable)
+    - Compte à rebours (jours / heures / minutes) vers la session imminente
+    """
+    try:
+        result = get_next_race()
+        if result is None:
+            raise HTTPException(status_code=404, detail="Aucune prochaine course trouvée — saison terminée.")
+        return result
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         _handle_httpx_errors(exc)
