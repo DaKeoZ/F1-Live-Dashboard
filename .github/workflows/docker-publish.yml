@@ -3,8 +3,8 @@ name: Build & Publish Docker Images
 on:
   push:
     branches: [main]
-    tags: ["v*.*.*"]        # déclenché aussi sur les tags de release (ex: v1.0.0)
-  workflow_dispatch:        # permet le déclenchement manuel depuis l'UI GitHub
+    tags: ["v*.*.*"]
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
@@ -23,7 +23,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # REQUIS : active le driver docker-container qui supporte le cache GHA
+      # github.repository_owner peut contenir des majuscules (ex: DaKeoZ)
+      # Docker exige des noms d'images en minuscules → on normalise ici
+      - name: Set lowercase owner
+        id: owner
+        run: echo "value=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -38,7 +43,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/f1-dashboard-backend
+          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/f1-dashboard-backend
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -67,7 +72,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # REQUIS : active le driver docker-container qui supporte le cache GHA
+      - name: Set lowercase owner
+        id: owner
+        run: echo "value=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -82,7 +90,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/f1-dashboard-frontend
+          images: ${{ env.REGISTRY }}/${{ steps.owner.outputs.value }}/f1-dashboard-frontend
           tags: |
             type=ref,event=branch
             type=ref,event=tag
@@ -92,7 +100,7 @@ jobs:
       - name: Build and push frontend image
         uses: docker/build-push-action@v6
         with:
-          context: .                          # racine pour inclure .streamlit/
+          context: .
           file: frontend/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -101,12 +109,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ── Deploy (optionnel — SSH vers le VPS) ─────────────────────────────────────
-  # Décommenter et configurer les secrets GitHub pour le déploiement automatique.
-  #
-  # Secrets requis :
-  #   VPS_HOST     → IP ou domaine du VPS
-  #   VPS_USER     → utilisateur SSH (ex: ubuntu)
-  #   VPS_SSH_KEY  → clé privée SSH (contenu complet du fichier id_rsa)
+  # Secrets requis : VPS_HOST, VPS_USER, VPS_SSH_KEY
   #
   # deploy:
   #   name: Deploy to VPS
@@ -115,6 +118,10 @@ jobs:
   #   if: github.ref == 'refs/heads/main'
   #
   #   steps:
+  #     - name: Set lowercase owner
+  #       id: owner
+  #       run: echo "value=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
+  #
   #     - name: Deploy via SSH
   #       uses: appleboy/ssh-action@v1
   #       with:
@@ -124,5 +131,5 @@ jobs:
   #         script: |
   #           cd /opt/f1-dashboard
   #           echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-  #           GHCR_OWNER=${{ github.repository_owner }} docker compose -f docker-compose.prod.yml pull
-  #           GHCR_OWNER=${{ github.repository_owner }} docker compose -f docker-compose.prod.yml up -d --remove-orphans
+  #           GHCR_OWNER=${{ steps.owner.outputs.value }} docker compose -f docker-compose.prod.yml pull
+  #           GHCR_OWNER=${{ steps.owner.outputs.value }} docker compose -f docker-compose.prod.yml up -d --remove-orphans
