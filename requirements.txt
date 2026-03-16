@@ -1,3 +1,9 @@
+# Backend
 fastapi==0.115.11
 uvicorn[standard]==0.34.0
 httpx==0.28.1
+
+# Frontend
+streamlit>=1.31.0
+plotly>=5.18.0
+pandas>=2.0.0
