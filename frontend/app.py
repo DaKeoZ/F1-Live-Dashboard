@@ -1148,7 +1148,7 @@ st.markdown(f"## {title_icon} {title_text} — Saison {season_label}")
 
 if standings_data is None:
     st.error(
-        "Impossible de charger les données — backend indisponible sur **http://localhost:9797**.",
+        f"Impossible de charger les données — backend indisponible sur **{f1_api.API_BASE}**.",
         icon="🚨",
     )
     st.stop()

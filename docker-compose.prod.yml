@@ -20,7 +20,7 @@ services:
     ports:
       - "127.0.0.1:9798:9798"   # exposé uniquement en local → Nginx proxie
     environment:
-      - API_BASE_URL=http://localhost:9797
+      - API_BASE_URL=http://backend:9797
     depends_on:
       backend:
         condition: service_healthy
