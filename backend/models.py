@@ -152,3 +152,52 @@ class LastRaceResponse(BaseModel):
     circuit: Circuit
     date: str
     results: list[RaceResultEntry]
+
+
+# ---------------------------------------------------------------------------
+# Télémétrie OpenF1
+# ---------------------------------------------------------------------------
+
+
+class TelemetryPoint(BaseModel):
+    """Un point de données de télémétrie voiture à un instant T."""
+
+    timestamp: datetime
+    speed: int = Field(..., ge=0, description="Vitesse en km/h")
+    rpm: int = Field(..., ge=0, description="Tours/minute moteur")
+    n_gear: int = Field(..., ge=0, le=8, description="Rapport de boîte engagé (0 = neutre)")
+    throttle: int = Field(..., ge=0, le=100, description="Ouverture des gaz en %")
+    brake: int = Field(..., ge=0, le=100, description="Pression de frein en %")
+    drs: int | None = Field(None, description="Statut DRS (0=fermé, 14=ouvert)")
+
+
+class TelemetryResponse(BaseModel):
+    """Réponse de l'endpoint /telemetry — données voiture échantillonnées."""
+
+    session_key: int
+    driver_number: int
+    total_raw_points: int = Field(..., description="Nombre total de points bruts dans la session")
+    sample_size: int = Field(..., description="Nombre de points retournés après échantillonnage")
+    sample_method: str = Field(..., description="Méthode d'échantillonnage : 'uniform' ou 'tail'")
+    points: list[TelemetryPoint]
+
+
+class OpenF1Session(BaseModel):
+    """Session de course provenant de l'API OpenF1."""
+
+    session_key: int
+    session_name: str
+    date_start: datetime
+    circuit_short_name: str
+    country_name: str
+    year: int
+
+
+class OpenF1Driver(BaseModel):
+    """Pilote dans une session OpenF1."""
+
+    driver_number: int
+    name_acronym: str
+    full_name: str
+    team_name: str
+    team_colour: str | None = Field(None, description="Couleur HEX sans #")

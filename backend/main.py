@@ -8,12 +8,21 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
 from api_client import get_constructor_standings, get_driver_standings, get_last_race_results, get_next_race
-from models import ConstructorStandingsResponse, DriverStandingsResponse, LastRaceResponse, NextRaceResponse
+from models import (
+    ConstructorStandingsResponse,
+    DriverStandingsResponse,
+    LastRaceResponse,
+    NextRaceResponse,
+    OpenF1Driver,
+    OpenF1Session,
+    TelemetryResponse,
+)
+from telemetry_service import get_openf1_drivers, get_openf1_sessions, get_telemetry
 
 app = FastAPI(
     title="F1 Live Dashboard API",
     description="API backend pour le F1 Live Dashboard — données pilotes, équipes et courses.",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 app.add_middleware(
@@ -82,6 +91,80 @@ def last_race_results():
         if result is None:
             raise HTTPException(status_code=404, detail="Aucun résultat disponible pour la saison en cours.")
         return result
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        _handle_httpx_errors(exc)
+
+
+# ── Télémétrie OpenF1 ─────────────────────────────────────────────────────────
+
+@app.get("/telemetry/sessions", response_model=list[OpenF1Session])
+def telemetry_sessions(
+    year: int | None = Query(default=None, description="Filtrer par année (ex: 2026)"),
+    session_type: str = Query(default="Race", description="Type de session OpenF1"),
+    limit: int = Query(default=20, ge=1, le=50),
+):
+    """
+    Liste les sessions OpenF1 disponibles, triées de la plus récente à la plus ancienne.
+    Utilisé pour alimenter le sélecteur de session dans l'interface.
+    """
+    try:
+        return get_openf1_sessions(year=year, session_type=session_type, limit=limit)
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        _handle_httpx_errors(exc)
+
+
+@app.get("/telemetry/drivers/{session_key}", response_model=list[OpenF1Driver])
+def telemetry_drivers(session_key: int):
+    """
+    Retourne la liste des pilotes dans une session OpenF1 (triés par numéro de voiture).
+    """
+    try:
+        drivers = get_openf1_drivers(session_key)
+        if not drivers:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Aucun pilote trouvé pour session_key={session_key}.",
+            )
+        return drivers
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        _handle_httpx_errors(exc)
+
+
+@app.get("/telemetry/{session_key}/{driver_number}", response_model=TelemetryResponse)
+def telemetry(
+    session_key: int,
+    driver_number: int,
+    sample_size: int = Query(
+        default=100,
+        ge=10,
+        le=500,
+        description="Nombre de points retournés après échantillonnage.",
+    ),
+    mode: str = Query(
+        default="uniform",
+        description=(
+            "Stratégie d'échantillonnage :\n"
+            "  'uniform' — points équidistants sur toute la session (race overview).\n"
+            "  'tail'    — N derniers points chronologiques (lecture live)."
+        ),
+    ),
+):
+    """
+    Retourne les données de télémétrie voiture (speed, rpm, n_gear, throttle, brake, drs)
+    pour un pilote donné sur une session OpenF1, sous-échantillonnées pour la visualisation.
+
+    Les données brutes d'OpenF1 peuvent dépasser 30 000 points par session (≈ 3.7 Hz).
+    Le paramètre `sample_size` contrôle le nombre de points retournés (défaut : 100).
+    """
+    try:
+        return get_telemetry(
+            session_key=session_key,
+            driver_number=driver_number,
+            sample_size=sample_size,
+            mode=mode,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         _handle_httpx_errors(exc)
 
