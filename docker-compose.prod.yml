@@ -1,18 +1,16 @@
-# Fichier de production — utilise les images pré-buildées depuis ghcr.io
-# Usage :
-#   GHCR_OWNER=ton-username docker compose -f docker-compose.prod.yml up -d
-#
-# Ou créer un fichier .env à côté avec : GHCR_OWNER=ton-username
+# Production — images ghcr.io
+# Usage : GHCR_OWNER=dakeoz docker compose -f docker-compose.prod.yml up -d
+# Ou : créer un fichier .env avec GHCR_OWNER=dakeoz  (MINUSCULES obligatoires)
 
 services:
 
   backend:
     image: ghcr.io/${GHCR_OWNER}/f1-dashboard-backend:latest
     ports:
-      - "9797:9797"
+      - "127.0.0.1:8000:8000"   # exposé uniquement en local → Nginx proxie
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9797/')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -20,24 +18,10 @@ services:
   frontend:
     image: ghcr.io/${GHCR_OWNER}/f1-dashboard-frontend:latest
     ports:
-      - "9798:9798"
+      - "127.0.0.1:8501:8501"   # exposé uniquement en local → Nginx proxie
     environment:
-      - API_BASE_URL=http://backend:9797
+      - API_BASE_URL=http://backend:8000
     depends_on:
       backend:
         condition: service_healthy
     restart: unless-stopped
-
-  # Reverse proxy (décommenter si tu veux exposer sur le port 80 avec un domaine)
-  # nginx:
-  #   image: nginx:alpine
-  #   ports:
-  #     - "80:80"
-  #     - "443:443"
-  #   volumes:
-  #     - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-  #     - /etc/letsencrypt:/etc/letsencrypt:ro   # certificats Certbot
-  #   depends_on:
-  #     - frontend
-  #     - backend
-  #   restart: unless-stopped
