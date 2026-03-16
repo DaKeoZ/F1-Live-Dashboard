@@ -13,7 +13,7 @@ import streamlit as st
 
 # En Docker, passer API_BASE_URL=http://backend:8000 via docker-compose.
 # En local, la valeur par défaut http://localhost:8000 fonctionne directement.
-API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000")
+API_BASE = os.getenv("API_BASE_URL", "http://localhost:9797")
 TIMEOUT = 10.0
 
 
