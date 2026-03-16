@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -71,9 +71,10 @@ TEAM_COLORS: dict[str, str] = {
     "alpine":       "#0093CC",
     "williams":     "#64C4FF",
     "haas":         "#B6BABD",
-    "sauber":       "#52E252",
     "racing bulls": "#6692FF",
     "rb":           "#6692FF",
+    "cadillac":     "#C5003E",
+    "audi":         "#F50537",
 }
 
 # Light teams need dark text on their badge
@@ -128,10 +129,13 @@ NATIONALITY_FLAGS: dict[str, str] = {
 }
 
 SESSION_LABELS: dict[str, str] = {
-    "Race":             "🔴 Course",
+    "FP1":              "🟢 Essais Libres 1",
+    "FP2":              "🟢 Essais Libres 2",
+    "FP3":              "🟢 Essais Libres 3",
     "Qualifying":       "🔵 Qualifications",
-    "Sprint":           "🟠 Sprint",
     "SprintQualifying": "🟡 Sprint Qualifs",
+    "Sprint":           "🟠 Sprint",
+    "Race":             "🔴 Course",
 }
 
 
@@ -160,9 +164,22 @@ def nat_flag(nationality: str) -> str:
     return NATIONALITY_FLAGS.get(nationality, "")
 
 
+def _parse_dt(iso: str) -> datetime:
+    """Parse une chaîne ISO 8601 en datetime — compatible Python 3.10 (gère le suffixe 'Z')."""
+    return datetime.fromisoformat(iso.replace("Z", "+00:00"))
+
+
+def _hex_to_rgba(hex_color: str, alpha: float = 1.0) -> str:
+    """Convertit une couleur HEX (#RRGGBB) en chaîne rgba() acceptée par Plotly."""
+    h = hex_color.lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
 def fmt_dt(iso: str) -> str:
-    dt = datetime.fromisoformat(iso)
-    return dt.strftime("%a %d %b · %H:%M UTC")
+    return _parse_dt(iso).strftime("%a %d %b · %H:%M UTC")
 
 
 def flag(country: str) -> str:
@@ -278,17 +295,34 @@ def _render_telemetry_page() -> None:
     col_sess, col_drv, col_opts = st.columns([3, 3, 2], gap="medium")
 
     with col_sess:
-        sessions = f1_api.fetch_openf1_sessions()
+        current_year = datetime.now().year
+        sessions = f1_api.fetch_openf1_sessions(year=current_year)
         if not sessions:
             st.error("Impossible de récupérer les sessions OpenF1.", icon="🚨")
             return
 
+        # Sessions déjà triées du plus récent au plus ancien (backend)
+        # On calcule l'index par défaut : session la plus proche de maintenant
+        # (en cours ou la plus récemment démarrée)
+        now_utc = datetime.now(timezone.utc)
+        default_idx = 0
+        for i, s in enumerate(sessions):
+            session_dt = _parse_dt(s["date_start"])
+            if session_dt <= now_utc:
+                default_idx = i
+                break  # Sessions triées décroissantes → premier <= now = le plus proche
+
         session_options = {
-            f"{s['circuit_short_name']} {s['date_start'][:10]} ({s['session_name']})": s["session_key"]
+            f"{s['circuit_short_name']} {s['date_start'][:10]} — {s['session_name']}": s["session_key"]
             for s in sessions
         }
-        selected_session_label = st.selectbox("Session", list(session_options.keys()))
-        selected_session_key   = session_options[selected_session_label]
+        session_labels = list(session_options.keys())
+        selected_session_label = st.selectbox(
+            f"Session ({current_year})",
+            session_labels,
+            index=default_idx,
+        )
+        selected_session_key = session_options[selected_session_label]
 
     with col_drv:
         drivers = f1_api.fetch_openf1_drivers(selected_session_key)
@@ -304,17 +338,37 @@ def _render_telemetry_page() -> None:
         selected_driver_number = driver_options[selected_driver_label]
 
     with col_opts:
-        sample_size = st.slider("Points", min_value=50, max_value=400, value=150, step=50)
+        # Détecter si la session est terminée pour proposer un mode adapté
+        _sel_session = next((s for s in sessions if s["session_key"] == selected_session_key), None)
+        _session_ended = (
+            _sel_session is not None
+            and _parse_dt(_sel_session["date_start"]) < now_utc - __import__("datetime").timedelta(hours=3)
+        )
+        default_mode  = "uniform" if _session_ended else "tail"
+        default_pts   = 1000     if _session_ended else 150
+
+        sample_size = st.slider(
+            "Points",
+            min_value=50,
+            max_value=2000,
+            value=default_pts,
+            step=50,
+            help="Session terminée : 1000+ pts pour la vue course complète. Live : 100-200 pts.",
+        )
         mode = st.radio(
             "Mode",
             options=["uniform", "tail"],
-            format_func=lambda m: "Race overview" if m == "uniform" else "Live (fin session)",
+            index=0 if default_mode == "uniform" else 1,
+            format_func=lambda m: "Course complète (uniform)" if m == "uniform" else "Temps réel (tail)",
             horizontal=True,
         )
 
     # ── Fetch & affichage ────────────────────────────────────────────────────
     if st.button("⚡ Charger la télémétrie", type="primary", use_container_width=True):
-        st.cache_data.clear()
+        # Invalider uniquement les caches de télémétrie et stints (pas le tracé circuit)
+        f1_api.fetch_telemetry.clear()
+        f1_api.fetch_tyre_stints.clear()
+        f1_api.fetch_all_tyre_stints.clear()
 
     with st.spinner("Récupération des données OpenF1… (peut prendre 5-15 s)"):
         telem = f1_api.fetch_telemetry(
@@ -348,7 +402,7 @@ def _render_telemetry_page() -> None:
     info_col4.metric("Mode", telem["sample_method"].upper())
 
     # ── Préparation des séries ────────────────────────────────────────────────
-    times     = [datetime.fromisoformat(p["timestamp"]) for p in points]
+    times     = [_parse_dt(p["timestamp"]) for p in points]
     speeds    = [p["speed"]    for p in points]
     rpms      = [p["rpm"]      for p in points]
     gears     = [p["n_gear"]   for p in points]
@@ -387,7 +441,7 @@ def _render_telemetry_page() -> None:
             name="Vitesse",
             line=dict(color=drv_colour, width=2),
             fill="tozeroy",
-            fillcolor=f"{drv_colour}18",
+            fillcolor=_hex_to_rgba(drv_colour, 0.09),
             hovertemplate="<b>%{y} km/h</b><br>%{x|%H:%M:%S}<extra></extra>",
         ),
         row=1, col=1,
@@ -480,6 +534,136 @@ def _render_telemetry_page() -> None:
         fig.update_xaxes(row=row, showgrid=False, tickfont=dict(color="#888"))
 
     st.plotly_chart(fig, use_container_width=True)
+
+    # ── Section Carte Circuit ─────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### 🗺 Positions sur le Circuit")
+
+    map_col_opts, map_col_info = st.columns([3, 1], gap="large")
+    with map_col_opts:
+        show_path = st.checkbox(
+            "Afficher le tracé du circuit (contour)",
+            value=True,
+            help="Charge le tracé GPS complet d'un pilote pour dessiner le contour du circuit (~5-10 s).",
+        )
+    with map_col_info:
+        st.caption(
+            "Données : OpenF1 /location\n"
+            "Les positions sont figées en fin de session.\n"
+            "Cache 2 min."
+        )
+
+    with st.spinner("Récupération des dernières positions… (jusqu'à 10 s, retry anti rate-limit)"):
+        positions_data = f1_api.fetch_last_positions(selected_session_key)
+
+    if positions_data is None or not positions_data.get("positions"):
+        st.warning("Impossible de récupérer les positions GPS pour cette session.", icon="⚠️")
+    else:
+        positions = positions_data["positions"]
+
+        # ── Tracé du circuit en arrière-plan ──────────────────────────────
+        circuit_fig = go.Figure()
+
+        if show_path:
+            with st.spinner("Chargement du tracé du circuit…"):
+                path_data = f1_api.fetch_car_path(
+                    selected_session_key,
+                    selected_driver_number,
+                    sample_size=600,
+                )
+            if path_data and path_data.get("path"):
+                pts = path_data["path"]
+                circuit_fig.add_trace(go.Scatter(
+                    x=[p["x"] for p in pts],
+                    y=[p["y"] for p in pts],
+                    mode="lines",
+                    name="Circuit",
+                    line=dict(color="rgba(255,255,255,0.15)", width=8),
+                    hoverinfo="skip",
+                ))
+
+        # ── Points de position des pilotes ────────────────────────────────
+        for pos in positions:
+            colour = pos.get("team_colour") or "#E10600"
+            if not colour.startswith("#"):
+                colour = f"#{colour}"
+            code = pos.get("driver_code") or f"#{pos['driver_number']}"
+            team = pos.get("team_name") or "—"
+
+            circuit_fig.add_trace(go.Scatter(
+                x=[pos["x"]],
+                y=[pos["y"]],
+                mode="markers+text",
+                name=code,
+                marker=dict(
+                    color=colour,
+                    size=14,
+                    line=dict(color="white", width=1.5),
+                    symbol="circle",
+                ),
+                text=[code],
+                textposition="top center",
+                textfont=dict(color="white", size=9),
+                hovertemplate=(
+                    f"<b>{code}</b><br>"
+                    f"Équipe : {team}<br>"
+                    f"x = {pos['x']:.0f}<br>"
+                    f"y = {pos['y']:.0f}<br>"
+                    f"z = {pos['z']:.0f}<br>"
+                    f"<extra></extra>"
+                ),
+                showlegend=False,
+            ))
+
+        # ── Annotations timestamp ─────────────────────────────────────────
+        ref_ts = positions_data.get("reference_timestamp", "")
+        if ref_ts:
+            ref_dt = _parse_dt(ref_ts)
+            ts_label = ref_dt.strftime("%d %b %Y · %H:%M:%S UTC")
+        else:
+            ts_label = "—"
+
+        circuit_fig.update_layout(
+            template="plotly_dark",
+            title=dict(
+                text=f"<b>Positions — {positions_data.get('total_drivers', '?')} pilotes</b>"
+                     f"  <span style='font-size:12px; color:#888;'>{ts_label}</span>",
+                font=dict(size=14),
+                x=0,
+            ),
+            xaxis=dict(
+                showgrid=False, zeroline=False,
+                showticklabels=False, scaleanchor="y",
+            ),
+            yaxis=dict(
+                showgrid=False, zeroline=False,
+                showticklabels=False,
+            ),
+            height=560,
+            margin=dict(l=0, r=0, t=60, b=0),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            showlegend=False,
+            hoverlabel=dict(bgcolor="#1A1A1A", bordercolor="#E10600", font_color="white"),
+        )
+        st.plotly_chart(circuit_fig, use_container_width=True)
+
+        # Tableau des positions
+        with st.expander("📋 Tableau des positions"):
+            rows_pos = [
+                {
+                    "N°":    p["driver_number"],
+                    "Code":  p.get("driver_code") or "—",
+                    "Équipe": p.get("team_name") or "—",
+                    "X":     round(p["x"], 1),
+                    "Y":     round(p["y"], 1),
+                    "Z":     round(p["z"], 1),
+                    "Timestamp": p["timestamp"][:19].replace("T", " "),
+                }
+                for p in positions
+            ]
+            df_pos = pd.DataFrame(rows_pos).set_index("N°")
+            st.dataframe(df_pos, use_container_width=True, height=350)
 
     # ── Section Stratégie Pneumatiques ────────────────────────────────────────
     st.divider()
@@ -614,6 +798,177 @@ def _render_telemetry_page() -> None:
             )
             st.plotly_chart(gantt, use_container_width=True)
 
+    # ── Vue Live ──────────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### 🔴 Vue Live — Jauge & Télémétrie Temps Réel")
+
+    live_col_info, live_col_toggle = st.columns([3, 1])
+    with live_col_info:
+        st.caption(
+            "Graphe bi-axe vitesse/RPM · Jauge rapport · Badge pneu actuel. "
+            "Active le rafraîchissement pour simuler le direct (session en cours uniquement)."
+        )
+    with live_col_toggle:
+        live_enabled = st.toggle("⟳ Auto-refresh 5 s", value=False)
+
+    @st.fragment(run_every="5s" if live_enabled else None)
+    def _live_fragment() -> None:
+        live_data = f1_api.fetch_live_telemetry(selected_session_key, selected_driver_number)
+
+        if not live_data or not live_data.get("points"):
+            st.info("Aucune donnée disponible pour cette session.", icon="ℹ️")
+            return
+
+        points = live_data["points"]
+        last   = points[-1]
+        times  = [_parse_dt(p["timestamp"]) for p in points]
+        speeds = [p["speed"]    for p in points]
+        rpms   = [p["rpm"]      for p in points]
+        drs_vals = [bool((p.get("drs") or 0) >= 8) for p in points]
+
+        # ── Tyre compound (stints cache TTL=300 s, pas de surcharge) ─────────
+        stints_data   = f1_api.fetch_tyre_stints(selected_session_key, selected_driver_number)
+        current_stint = (stints_data or {}).get("stints", [{}])[-1] if stints_data else {}
+        compound      = ((current_stint.get("compound") or "UNKNOWN")).upper()
+        c_color = COMPOUND_COLORS.get(compound, "#555555")
+        c_text  = COMPOUND_TEXT_COLORS.get(compound, "#CCCCCC")
+        c_abbr  = COMPOUND_ABBREVS.get(compound, "?")
+        stint_no   = current_stint.get("stint_number", "?")
+        stint_lap  = current_stint.get("lap_start", "?")
+
+        # ── Layout ────────────────────────────────────────────────────────────
+        col_chart, col_gear, col_tyre = st.columns([5, 2, 2], gap="medium")
+
+        # ── Graphe dual-axe Speed + RPM ───────────────────────────────────────
+        with col_chart:
+            fig_live = make_subplots(specs=[[{"secondary_y": True}]])
+
+            fig_live.add_trace(
+                go.Scatter(
+                    x=times, y=speeds,
+                    name="Vitesse (km/h)",
+                    line=dict(color=drv_colour, width=2.5),
+                    fill="tozeroy",
+                    fillcolor=_hex_to_rgba(drv_colour, 0.08),
+                    hovertemplate="<b>%{y} km/h</b> · %{x|%H:%M:%S}<extra></extra>",
+                ),
+                secondary_y=False,
+            )
+            fig_live.add_trace(
+                go.Scatter(
+                    x=times, y=rpms,
+                    name="RPM",
+                    line=dict(color="#FF8000", width=1.5, dash="dot"),
+                    hovertemplate="<b>%{y:,} RPM</b> · %{x|%H:%M:%S}<extra></extra>",
+                ),
+                secondary_y=True,
+            )
+            # Points DRS actifs en surimpression
+            fig_live.add_trace(
+                go.Scatter(
+                    x=[t for t, d in zip(times, drs_vals) if d],
+                    y=[s for s, d in zip(speeds, drs_vals) if d],
+                    name="DRS actif",
+                    mode="markers",
+                    marker=dict(color="#00FF88", size=7, symbol="diamond"),
+                    hovertemplate="DRS — %{y} km/h<extra></extra>",
+                ),
+                secondary_y=False,
+            )
+            fig_live.update_yaxes(title_text="Vitesse (km/h)", secondary_y=False,
+                                  gridcolor="rgba(255,255,255,0.07)")
+            fig_live.update_yaxes(title_text="RPM", secondary_y=True,
+                                  gridcolor="rgba(255,255,255,0.03)")
+            fig_live.update_layout(
+                template="plotly_dark",
+                height=260,
+                margin=dict(l=0, r=0, t=30, b=0),
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+                xaxis=dict(showgrid=False),
+                legend=dict(orientation="h", y=1.14, font=dict(size=10)),
+                hoverlabel=dict(bgcolor="#1A1A1A", font_color="white"),
+            )
+            st.plotly_chart(fig_live, use_container_width=True)
+
+        # ── Jauge Rapport de boîte ─────────────────────────────────────────────
+        with col_gear:
+            current_gear = int(last.get("n_gear") or 0)
+            fig_gear = go.Figure(go.Indicator(
+                mode="gauge+number",
+                value=current_gear,
+                title=dict(text="Rapport", font=dict(color="#CCCCCC", size=13)),
+                number=dict(font=dict(size=60, color=drv_colour)),
+                gauge=dict(
+                    axis=dict(
+                        range=[0, 8],
+                        tickvals=list(range(9)),
+                        tickfont=dict(color="#AAAAAA", size=9),
+                        tickcolor="#555",
+                    ),
+                    bar=dict(color=drv_colour, thickness=0.28),
+                    bgcolor="#181818",
+                    borderwidth=1,
+                    bordercolor="#333",
+                    steps=[
+                        dict(range=[i, i + 1], color="#242424" if i % 2 == 0 else "#1C1C1C")
+                        for i in range(8)
+                    ],
+                    threshold=dict(
+                        line=dict(color="white", width=2),
+                        thickness=0.75,
+                        value=current_gear,
+                    ),
+                ),
+            ))
+            fig_gear.update_layout(
+                height=220,
+                margin=dict(l=10, r=10, t=40, b=10),
+                paper_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="white"),
+            )
+            st.plotly_chart(fig_gear, use_container_width=True)
+
+        # ── Badge Pneu ────────────────────────────────────────────────────────
+        with col_tyre:
+            st.markdown(
+                f"""
+                <div style="display:flex; flex-direction:column; align-items:center;
+                            padding-top:28px;">
+                    <div style="
+                        width:90px; height:90px; border-radius:50%;
+                        background:{c_color};
+                        display:flex; align-items:center; justify-content:center;
+                        font-size:38px; font-weight:900; color:{c_text};
+                        border:3px solid rgba(255,255,255,0.25);
+                        box-shadow:0 0 22px {c_color}55;
+                    ">{c_abbr}</div>
+                    <p style="color:#CCC; margin:10px 0 2px; font-size:0.9em;
+                              font-weight:600; text-align:center;">
+                        {compound.title()}
+                    </p>
+                    <p style="color:#777; font-size:0.75em; text-align:center; margin:0;">
+                        Stint {stint_no} · Tour {stint_lap}+
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        # ── Bande valeurs instantanées ─────────────────────────────────────────
+        st.markdown(
+            "<hr style='border:1px solid #222; margin:6px 0 10px;'>",
+            unsafe_allow_html=True,
+        )
+        cv1, cv2, cv3, cv4, cv5 = st.columns(5)
+        cv1.metric("🚀 Vitesse",  f"{last['speed']} km/h")
+        cv2.metric("⚙️ RPM",      f"{int(last['rpm']):,}")
+        cv3.metric("🟢 Gaz",      f"{last['throttle']} %")
+        cv4.metric("🔴 Frein",    f"{last['brake']} %")
+        cv5.metric("DRS",         "Ouvert ✅" if drs_vals[-1] else "Fermé")
+
+    _live_fragment()
+
 
 # ── Data fetch ────────────────────────────────────────────────────────────────
 with st.spinner("Chargement des données F1…"):
@@ -696,17 +1051,22 @@ else:
 
         with col_sessions:
             st.markdown("**Programme des sessions**")
-            sessions_ordered: list[tuple[str, str]] = []
-            if next_race.get("sprint_qualifying"):
-                sessions_ordered.append(("SprintQualifying", next_race["sprint_qualifying"]["datetime_utc"]))
-            if next_race.get("sprint"):
-                sessions_ordered.append(("Sprint", next_race["sprint"]["datetime_utc"]))
-            sessions_ordered.append(("Qualifying", next_race["qualifying"]["datetime_utc"]))
-            sessions_ordered.append(("Race", next_race["race"]["datetime_utc"]))
-
-            for key, dt_iso in sessions_ordered:
-                icon = SESSION_LABELS.get(key, key)
-                st.markdown(f"{icon} &nbsp; `{fmt_dt(dt_iso)}`")
+            # Toutes les sessions possibles dans l'ordre chronologique naturel du weekend
+            _session_map = [
+                ("FP1",              next_race.get("fp1")),
+                ("FP2",              next_race.get("fp2")),
+                ("FP3",              next_race.get("fp3")),
+                ("SprintQualifying", next_race.get("sprint_qualifying")),
+                ("Sprint",           next_race.get("sprint")),
+                ("Qualifying",       next_race.get("qualifying")),
+                ("Race",             next_race.get("race")),
+            ]
+            for key, session_obj in _session_map:
+                if session_obj is None:
+                    continue
+                dt_iso = session_obj["datetime_utc"]
+                label  = SESSION_LABELS.get(key, key)
+                st.markdown(f"{label} &nbsp; `{fmt_dt(dt_iso)}`")
 
         with col_cd:
             st.markdown(

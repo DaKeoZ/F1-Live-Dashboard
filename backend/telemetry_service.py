@@ -9,12 +9,18 @@ Stratégies d'échantillonnage disponibles :
 
 from __future__ import annotations
 
-from datetime import datetime
+import concurrent.futures
+import time
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
 from models import (
+    AllDriversPositionResponse,
     AllTyreStrategiesResponse,
+    CarPathPoint,
+    CarPathResponse,
+    DriverPosition,
     OpenF1Driver,
     OpenF1Session,
     TelemetryPoint,
@@ -323,4 +329,215 @@ def get_all_tyre_stints(session_key: int) -> AllTyreStrategiesResponse:
         session_key=session_key,
         total_drivers=len(strategies),
         strategies=strategies,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Positions GPS — suivi en temps réel
+# ---------------------------------------------------------------------------
+
+# Nombre maximum de workers concurrents pour éviter le rate-limiting d'OpenF1
+_LOCATION_MAX_WORKERS = 3
+# Délai (secondes) entre les passes de retry
+_RETRY_DELAY = 0.6
+# Nombre maximum de tentatives par pilote
+_MAX_RETRIES = 3
+
+
+def _get_session_info(session_key: int) -> dict:
+    """Récupère les infos de session depuis OpenF1 (date_start, date_end…)."""
+    raw = _get(f"{OPENF1_BASE}/sessions", params={"session_key": session_key})
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"Session introuvable : session_key={session_key}")
+    return raw[0]
+
+
+def _calc_filter_date(session_info: dict) -> str:
+    """
+    Calcule la date de filtre pour n'obtenir que la dernière partie de la session
+    (60 % du temps écoulé depuis le début).
+    Pour une course de 2h, cela correspond aux 48 dernières minutes.
+    """
+    date_start = datetime.fromisoformat(session_info["date_start"])
+    date_end   = datetime.fromisoformat(session_info["date_end"])
+    duration   = (date_end - date_start).total_seconds()
+    filter_dt  = date_start.replace(tzinfo=None) + timedelta(seconds=duration * 0.60)
+    return filter_dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _fetch_location_last(
+    session_key: int,
+    driver_number: int,
+    filter_date: str,
+) -> tuple[int, dict | None]:
+    """
+    Récupère le DERNIER point de position GPS d'un pilote.
+    Retourne (driver_number, last_point_dict) ou (driver_number, None) si indisponible.
+    """
+    try:
+        raw = _get(
+            f"{OPENF1_BASE}/location",
+            params={
+                "session_key":   session_key,
+                "driver_number": driver_number,
+                "date>":         filter_date,
+            },
+            timeout=TIMEOUT_LARGE,
+        )
+        if isinstance(raw, list) and raw:
+            return driver_number, raw[-1]
+        return driver_number, None
+    except Exception:
+        return driver_number, None
+
+
+def _fetch_all_last_positions_concurrent(
+    session_key: int,
+    driver_numbers: list[int],
+    filter_date: str,
+) -> dict[int, dict]:
+    """
+    Récupère la dernière position GPS de tous les pilotes en parallèle.
+    Gère le rate-limiting d'OpenF1 via un nombre limité de workers et des passes de retry.
+
+    Returns:
+        dict mapping driver_number → last_position_dict
+    """
+    results: dict[int, dict] = {}
+    remaining = list(driver_numbers)
+
+    for attempt in range(_MAX_RETRIES):
+        if not remaining:
+            break
+        if attempt > 0:
+            time.sleep(_RETRY_DELAY * attempt)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_LOCATION_MAX_WORKERS) as executor:
+            futures = {
+                executor.submit(_fetch_location_last, session_key, dn, filter_date): dn
+                for dn in remaining
+            }
+            for future in concurrent.futures.as_completed(futures):
+                dn, point = future.result()
+                if point is not None:
+                    results[dn] = point
+
+        remaining = [dn for dn in remaining if dn not in results]
+
+    return results
+
+
+def get_last_positions(session_key: int) -> AllDriversPositionResponse:
+    """
+    Retourne la dernière position GPS connue de tous les pilotes d'une session.
+
+    Stratégie :
+    1. Récupère la liste des pilotes de la session.
+    2. Calcule une fenêtre temporelle (60 % de la durée de session) pour limiter les données.
+    3. Effectue les requêtes en parallèle (max 3 workers) avec retry automatique.
+    4. Enrichit chaque position avec le code pilote et la couleur d'écurie.
+    """
+    session_info   = _get_session_info(session_key)
+    filter_date    = _calc_filter_date(session_info)
+    drivers        = get_openf1_drivers(session_key)
+    driver_numbers = [d.driver_number for d in drivers]
+
+    raw_positions  = _fetch_all_last_positions_concurrent(session_key, driver_numbers, filter_date)
+
+    # Enrichissement : code pilote + couleur équipe
+    drv_map: dict[int, OpenF1Driver] = {d.driver_number: d for d in drivers}
+
+    positions: list[DriverPosition] = []
+    for dn, pt in raw_positions.items():
+        drv = drv_map.get(dn)
+        colour = drv.team_colour if drv else None
+
+        positions.append(DriverPosition(
+            driver_number=dn,
+            x=float(pt["x"]),
+            y=float(pt["y"]),
+            z=float(pt.get("z") or 0),
+            timestamp=datetime.fromisoformat(pt["date"]),
+            driver_code=drv.name_acronym if drv else None,
+            team_name=drv.team_name if drv else None,
+            team_colour=colour,
+        ))
+
+    # Tri par driver_number pour une réponse déterministe
+    positions.sort(key=lambda p: p.driver_number)
+
+    ref_ts = max((p.timestamp for p in positions), default=datetime.now(timezone.utc))
+
+    return AllDriversPositionResponse(
+        session_key=session_key,
+        captured_at=datetime.now(timezone.utc),
+        reference_timestamp=ref_ts,
+        total_drivers=len(positions),
+        positions=positions,
+    )
+
+
+def get_car_path(
+    session_key: int,
+    driver_number: int,
+    sample_size: int = 500,
+) -> CarPathResponse:
+    """
+    Retourne le tracé GPS CONSÉCUTIF d'un pilote pour dessiner le contour du circuit.
+
+    Stratégie anti-429 : au lieu de charger les 32 000+ points de la session entière,
+    on utilise un filtre de DATE pour ne récupérer que les 12 premières minutes
+    de la session (tour de formation + 1-2 tours de course ≈ 400 points max).
+
+    On saute ensuite les 35 % du début (tour de formation) pour ne conserver que
+    des points correspondant à des tours de course propres.
+    """
+    # Récupérer l'heure de début de session pour construire la fenêtre temporelle
+    session_info = _get_session_info(session_key)
+    date_start_str = session_info.get("date_start", "")
+    date_start = datetime.fromisoformat(date_start_str.replace("Z", "+00:00"))
+    # Travailler en UTC naïf pour correspondre au format attendu par OpenF1
+    window_start = date_start.replace(tzinfo=None)
+    window_end   = window_start + timedelta(minutes=12)
+
+    raw = _get(
+        f"{OPENF1_BASE}/location",
+        params={
+            "session_key":   session_key,
+            "driver_number": driver_number,
+            "date>":         window_start.strftime("%Y-%m-%dT%H:%M:%S"),
+            "date<":         window_end.strftime("%Y-%m-%dT%H:%M:%S"),
+        },
+        timeout=TIMEOUT_SMALL,   # Données légères — timeout court suffisant
+    )
+
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(
+            f"Aucune donnée GPS dans les 12 premières minutes pour "
+            f"session_key={session_key}, driver={driver_number}."
+        )
+
+    total = len(raw)
+
+    # Sauter le tour de formation (~35 % du début de la fenêtre ≈ 4 min)
+    skip   = min(int(total * 0.35), max(0, total - sample_size))
+    window = raw[skip: skip + sample_size]
+    if len(window) < min(50, sample_size // 4):
+        window = raw[:sample_size]
+
+    path = [
+        CarPathPoint(
+            x=float(pt["x"]),
+            y=float(pt["y"]),
+            z=float(pt.get("z") or 0),
+        )
+        for pt in window
+    ]
+
+    return CarPathResponse(
+        session_key=session_key,
+        driver_number=driver_number,
+        total_raw_points=total,
+        sample_size=len(path),
+        path=path,
     )

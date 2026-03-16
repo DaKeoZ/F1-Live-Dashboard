@@ -6,10 +6,14 @@ de solliciter l'API Jolpica à chaque rerender Streamlit.
 
 from __future__ import annotations
 
+import os
+
 import httpx
 import streamlit as st
 
-API_BASE = "http://localhost:8000"
+# En Docker, passer API_BASE_URL=http://backend:8000 via docker-compose.
+# En local, la valeur par défaut http://localhost:8000 fonctionne directement.
+API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000")
 TIMEOUT = 10.0
 
 
@@ -67,7 +71,7 @@ def fetch_last_race() -> dict | None:
 def fetch_openf1_sessions(year: int | None = None, session_type: str = "Race") -> list[dict]:
     """Retourne les sessions OpenF1 disponibles."""
     try:
-        params: dict = {"session_type": session_type, "limit": 20}
+        params: dict = {"session_type": session_type, "limit": 100}
         if year:
             params["year"] = year
         with httpx.Client(timeout=TIMEOUT) as client:
@@ -108,6 +112,52 @@ def fetch_all_tyre_stints(session_key: int) -> dict | None:
     try:
         with httpx.Client(timeout=TIMEOUT) as client:
             resp = client.get(f"{API_BASE}/tyres/{session_key}")
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_last_positions(session_key: int) -> dict | None:
+    """Retourne la dernière position GPS de tous les pilotes (snapshot)."""
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            resp = client.get(f"{API_BASE}/location/{session_key}")
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=5, show_spinner=False)
+def fetch_live_telemetry(session_key: int, driver_number: int, sample_size: int = 100) -> dict | None:
+    """
+    Télémétrie live en mode tail (TTL=5 s).
+    Conçue pour le polling automatique : le cache expire toutes les 5 secondes,
+    ce qui garantit des données fraîches à chaque rafraîchissement du fragment.
+    """
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.get(
+                f"{API_BASE}/telemetry/{session_key}/{driver_number}",
+                params={"sample_size": sample_size, "mode": "tail"},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=86_400, show_spinner=False)  # 24 h — le tracé d'un circuit ne change pas
+def fetch_car_path(session_key: int, driver_number: int, sample_size: int = 500) -> dict | None:
+    """Retourne le tracé GPS sous-échantillonné d'un pilote (contour circuit)."""
+    try:
+        with httpx.Client(timeout=35.0) as client:
+            resp = client.get(
+                f"{API_BASE}/location/{session_key}/{driver_number}",
+                params={"sample_size": sample_size},
+            )
             resp.raise_for_status()
             return resp.json()
     except Exception:

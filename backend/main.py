@@ -9,7 +9,9 @@ import httpx
 
 from api_client import get_constructor_standings, get_driver_standings, get_last_race_results, get_next_race
 from models import (
+    AllDriversPositionResponse,
     AllTyreStrategiesResponse,
+    CarPathResponse,
     ConstructorStandingsResponse,
     DriverStandingsResponse,
     LastRaceResponse,
@@ -21,6 +23,8 @@ from models import (
 )
 from telemetry_service import (
     get_all_tyre_stints,
+    get_car_path,
+    get_last_positions,
     get_openf1_drivers,
     get_openf1_sessions,
     get_telemetry,
@@ -88,6 +92,52 @@ def constructor_standings(season: str = _SEASON_QUERY):
         _handle_httpx_errors(exc)
 
 
+# ── Positions GPS ─────────────────────────────────────────────────────────────
+
+@app.get("/location/{session_key}", response_model=AllDriversPositionResponse)
+def last_positions(session_key: int):
+    """
+    Retourne la dernière position GPS connue de tous les pilotes d'une session.
+
+    Les coordonnées x, y sont dans le référentiel du circuit (unités arbitraires OpenF1).
+    La coordonnée z représente l'altitude normalisée.
+
+    Stratégie d'acquisition :
+    - Fenêtre temporelle = 60 % de la durée de session (évite de charger la totalité des données).
+    - Requêtes concurrentes (max 3 workers) avec 3 passes de retry pour contourner le rate-limiting.
+    - Cache côté client recommandé : 60 s (données quasi-statiques pour une session terminée).
+    """
+    try:
+        return get_last_positions(session_key=session_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        _handle_httpx_errors(exc)
+
+
+@app.get("/location/{session_key}/{driver_number}", response_model=CarPathResponse)
+def car_path(
+    session_key: int,
+    driver_number: int,
+    sample_size: int = Query(
+        default=500,
+        ge=50,
+        le=2000,
+        description="Nombre de points du tracé retournés (pour dessiner le contour du circuit).",
+    ),
+):
+    """
+    Retourne le tracé GPS sous-échantillonné d'un pilote sur l'ensemble de la session.
+    Utile pour dessiner le contour du circuit en fond de la carte de positions.
+    """
+    try:
+        return get_car_path(session_key=session_key, driver_number=driver_number, sample_size=sample_size)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        _handle_httpx_errors(exc)
+
+
 # ── Stratégie Pneumatiques ────────────────────────────────────────────────────
 
 @app.get("/tyres/{session_key}/{driver_number}", response_model=TyreStrategyResponse)
@@ -141,7 +191,7 @@ def last_race_results():
 def telemetry_sessions(
     year: int | None = Query(default=None, description="Filtrer par année (ex: 2026)"),
     session_type: str = Query(default="Race", description="Type de session OpenF1"),
-    limit: int = Query(default=20, ge=1, le=50),
+    limit: int = Query(default=50, ge=1, le=100),
 ):
     """
     Liste les sessions OpenF1 disponibles, triées de la plus récente à la plus ancienne.
@@ -175,9 +225,9 @@ def telemetry(
     session_key: int,
     driver_number: int,
     sample_size: int = Query(
-        default=100,
+        default=200,
         ge=10,
-        le=500,
+        le=2000,
         description="Nombre de points retournés après échantillonnage.",
     ),
     mode: str = Query(

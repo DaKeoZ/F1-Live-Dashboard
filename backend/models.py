@@ -116,10 +116,13 @@ class NextRaceResponse(BaseModel):
     round: int
     race_name: str
     circuit: Circuit
-    race: SessionInfo
+    fp1: SessionInfo | None = Field(None, description="Essais libres 1")
+    fp2: SessionInfo | None = Field(None, description="Essais libres 2")
+    fp3: SessionInfo | None = Field(None, description="Essais libres 3 (absent sur sprint weekend)")
     qualifying: SessionInfo
     sprint: SessionInfo | None = Field(None, description="Présent uniquement lors d'un sprint weekend")
     sprint_qualifying: SessionInfo | None = Field(None, description="Qualifications sprint")
+    race: SessionInfo
     countdown: Countdown
 
 
@@ -239,3 +242,49 @@ class AllTyreStrategiesResponse(BaseModel):
     session_key: int
     total_drivers: int
     strategies: list[TyreStrategyResponse]
+
+
+# ---------------------------------------------------------------------------
+# Positions GPS OpenF1
+# ---------------------------------------------------------------------------
+
+
+class DriverPosition(BaseModel):
+    """Dernière position GPS connue d'un pilote."""
+
+    driver_number: int
+    x: float = Field(..., description="Coordonnée X dans le repère circuit")
+    y: float = Field(..., description="Coordonnée Y dans le repère circuit")
+    z: float = Field(..., description="Altitude normalisée")
+    timestamp: datetime = Field(..., description="Horodatage UTC de ce point")
+    driver_code: str | None = None
+    team_name: str | None = None
+    team_colour: str | None = Field(None, description="Couleur HEX de l'écurie (avec #)")
+
+
+class AllDriversPositionResponse(BaseModel):
+    """Snapshot de la dernière position GPS de tous les pilotes d'une session."""
+
+    session_key: int
+    captured_at: datetime = Field(..., description="Heure UTC de la requête API")
+    reference_timestamp: datetime = Field(..., description="Timestamp du point de données le plus récent")
+    total_drivers: int
+    positions: list[DriverPosition]
+
+
+class CarPathPoint(BaseModel):
+    """Un point du tracé GPS d'une voiture (vue circuit top-down)."""
+
+    x: float
+    y: float
+    z: float
+
+
+class CarPathResponse(BaseModel):
+    """Tracé GPS sous-échantillonné d'un pilote — sert à dessiner le contour du circuit."""
+
+    session_key: int
+    driver_number: int
+    total_raw_points: int
+    sample_size: int
+    path: list[CarPathPoint]

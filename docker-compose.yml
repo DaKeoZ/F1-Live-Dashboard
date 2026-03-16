@@ -1,0 +1,26 @@
+services:
+
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "9797:9797"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9797/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  frontend:
+    build:
+      context: .                      # racine nécessaire pour copier .streamlit/
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "9798:9798"
+    environment:
+      - API_BASE_URL=http://backend:9797   # réseau Docker interne
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

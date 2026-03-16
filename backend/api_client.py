@@ -206,6 +206,25 @@ def _parse_next_race(raw: dict, now_utc: datetime) -> NextRaceResponse:
         "Race": race_dt,
     }
 
+    # ── Essais libres ─────────────────────────────────────────────────────────
+    fp1 = fp2 = fp3 = None
+
+    if "FirstPractice" in raw:
+        fp1_dt = _parse_session_dt(raw["FirstPractice"]["date"], raw["FirstPractice"].get("time", "00:00:00Z"))
+        fp1 = SessionInfo(datetime_utc=fp1_dt)
+        sessions["FP1"] = fp1_dt
+
+    if "SecondPractice" in raw:
+        fp2_dt = _parse_session_dt(raw["SecondPractice"]["date"], raw["SecondPractice"].get("time", "00:00:00Z"))
+        fp2 = SessionInfo(datetime_utc=fp2_dt)
+        sessions["FP2"] = fp2_dt
+
+    if "ThirdPractice" in raw:
+        fp3_dt = _parse_session_dt(raw["ThirdPractice"]["date"], raw["ThirdPractice"].get("time", "00:00:00Z"))
+        fp3 = SessionInfo(datetime_utc=fp3_dt)
+        sessions["FP3"] = fp3_dt
+
+    # ── Sprint weekend ────────────────────────────────────────────────────────
     sprint: SessionInfo | None = None
     sprint_qualifying: SessionInfo | None = None
 
@@ -224,10 +243,13 @@ def _parse_next_race(raw: dict, now_utc: datetime) -> NextRaceResponse:
         round=int(raw["round"]),
         race_name=raw["raceName"],
         circuit=circuit,
-        race=SessionInfo(datetime_utc=race_dt),
+        fp1=fp1,
+        fp2=fp2,
+        fp3=fp3,
         qualifying=SessionInfo(datetime_utc=qual_dt),
         sprint=sprint,
         sprint_qualifying=sprint_qualifying,
+        race=SessionInfo(datetime_utc=race_dt),
         countdown=_build_countdown(sessions, now_utc),
     )
 

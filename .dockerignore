@@ -1,0 +1,32 @@
+# Environnements virtuels
+.venv/
+venv/
+
+# Cache Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Git
+.git/
+.gitignore
+
+# Fichiers temporaires de test/sonde
+_probe_*.py
+_test_*.py
+
+# Éditeur
+.vscode/
+.idea/
+*.cursor
+
+# Documentation (pas utile dans l'image)
+*.md
+
+# Docker (évite la récursion)
+docker-compose*.yml
+Dockerfile*
+.dockerignore
+
+# CI
+.github/
