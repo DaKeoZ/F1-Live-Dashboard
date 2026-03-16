@@ -121,3 +121,34 @@ class NextRaceResponse(BaseModel):
     sprint: SessionInfo | None = Field(None, description="Présent uniquement lors d'un sprint weekend")
     sprint_qualifying: SessionInfo | None = Field(None, description="Qualifications sprint")
     countdown: Countdown
+
+
+# ---------------------------------------------------------------------------
+# Résultats de course
+# ---------------------------------------------------------------------------
+
+
+class RaceResultEntry(BaseModel):
+    """Résultat individuel d'un pilote pour une course donnée."""
+
+    position: int
+    driver_code: str | None = Field(None, description="Code 3 lettres du pilote")
+    driver_name: str
+    constructor_name: str
+    grid: int = Field(..., description="Position de départ")
+    laps: int
+    time_or_status: str = Field(..., description="Temps de course ou statut (DNF, +Xm Xs…)")
+    points: float = Field(..., ge=0)
+    fastest_lap_time: str | None = None
+    fastest_lap_rank: int | None = None
+
+
+class LastRaceResponse(BaseModel):
+    """Réponse complète de l'endpoint /race/last."""
+
+    season: str
+    round: int
+    race_name: str
+    circuit: Circuit
+    date: str
+    results: list[RaceResultEntry]

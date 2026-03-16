@@ -17,7 +17,9 @@ from models import (
     DriverInfo,
     DriverStanding,
     DriverStandingsResponse,
+    LastRaceResponse,
     NextRaceResponse,
+    RaceResultEntry,
     SessionInfo,
 )
 
@@ -227,6 +229,71 @@ def _parse_next_race(raw: dict, now_utc: datetime) -> NextRaceResponse:
         sprint=sprint,
         sprint_qualifying=sprint_qualifying,
         countdown=_build_countdown(sessions, now_utc),
+    )
+
+
+def get_last_race_results() -> LastRaceResponse | None:
+    """
+    Retourne les résultats complets de la dernière course disputée.
+    Utilise l'alias /current/last de l'API Jolpica.
+    """
+    url = f"{BASE_URL}/current/last/results.json"
+    data = _get(url)
+    races: list[dict] = data["MRData"]["RaceTable"].get("Races", [])
+    if not races:
+        return None
+    return _parse_last_race(races[0])
+
+
+def _parse_result_entry(raw: dict) -> RaceResultEntry:
+    driver = raw["Driver"]
+    constructor = raw["Constructor"]
+
+    time_raw = raw.get("Time", {})
+    time_or_status = time_raw.get("time") or raw.get("status", "—")
+
+    fastest_lap_raw = raw.get("FastestLap")
+    fastest_lap_time = fastest_lap_rank = None
+    if fastest_lap_raw:
+        fastest_lap_time = fastest_lap_raw.get("Time", {}).get("time")
+        fastest_lap_rank = int(fastest_lap_raw["rank"]) if fastest_lap_raw.get("rank") else None
+
+    return RaceResultEntry(
+        position=int(raw["position"]),
+        driver_code=driver.get("code"),
+        driver_name=f"{driver['givenName']} {driver['familyName']}",
+        constructor_name=constructor["name"],
+        grid=int(raw.get("grid", 0)),
+        laps=int(raw.get("laps", 0)),
+        time_or_status=time_or_status,
+        points=float(raw.get("points", 0)),
+        fastest_lap_time=fastest_lap_time,
+        fastest_lap_rank=fastest_lap_rank,
+    )
+
+
+def _parse_last_race(raw: dict) -> LastRaceResponse:
+    circuit_raw = raw["Circuit"]
+    loc_raw = circuit_raw["Location"]
+
+    circuit = Circuit(
+        circuit_id=circuit_raw["circuitId"],
+        name=circuit_raw["circuitName"],
+        location=CircuitLocation(
+            locality=loc_raw["locality"],
+            country=loc_raw["country"],
+            lat=float(loc_raw["lat"]),
+            long=float(loc_raw["long"]),
+        ),
+    )
+
+    return LastRaceResponse(
+        season=raw["season"],
+        round=int(raw["round"]),
+        race_name=raw["raceName"],
+        circuit=circuit,
+        date=raw["date"],
+        results=[_parse_result_entry(r) for r in raw.get("Results", [])],
     )
 
 

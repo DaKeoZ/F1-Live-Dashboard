@@ -7,8 +7,8 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
-from api_client import get_constructor_standings, get_driver_standings, get_next_race
-from models import ConstructorStandingsResponse, DriverStandingsResponse, NextRaceResponse
+from api_client import get_constructor_standings, get_driver_standings, get_last_race_results, get_next_race
+from models import ConstructorStandingsResponse, DriverStandingsResponse, LastRaceResponse, NextRaceResponse
 
 app = FastAPI(
     title="F1 Live Dashboard API",
@@ -67,6 +67,21 @@ def constructor_standings(season: str = _SEASON_QUERY):
     """
     try:
         return get_constructor_standings(season=season)
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        _handle_httpx_errors(exc)
+
+
+@app.get("/race/last", response_model=LastRaceResponse)
+def last_race_results():
+    """
+    Retourne les résultats complets de la dernière course disputée.
+    Inclut le classement complet, les temps, statuts et meilleurs tours.
+    """
+    try:
+        result = get_last_race_results()
+        if result is None:
+            raise HTTPException(status_code=404, detail="Aucun résultat disponible pour la saison en cours.")
+        return result
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         _handle_httpx_errors(exc)
 

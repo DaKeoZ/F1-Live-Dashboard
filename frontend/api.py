@@ -47,3 +47,17 @@ def fetch_constructor_standings(season: str = "current") -> dict | None:
             return resp.json()
     except Exception:
         return None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_last_race() -> dict | None:
+    """Retourne les résultats de la dernière course ou None si indisponible."""
+    try:
+        with httpx.Client(timeout=TIMEOUT) as client:
+            resp = client.get(f"{API_BASE}/race/last")
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return None
