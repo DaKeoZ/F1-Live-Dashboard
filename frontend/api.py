@@ -90,6 +90,30 @@ def fetch_openf1_drivers(session_key: int) -> list[dict]:
         return []
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_tyre_stints(session_key: int, driver_number: int) -> dict | None:
+    """Retourne la stratégie pneus d'un pilote (stints)."""
+    try:
+        with httpx.Client(timeout=TIMEOUT) as client:
+            resp = client.get(f"{API_BASE}/tyres/{session_key}/{driver_number}")
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_all_tyre_stints(session_key: int) -> dict | None:
+    """Retourne la stratégie pneus de tous les pilotes d'une session."""
+    try:
+        with httpx.Client(timeout=TIMEOUT) as client:
+            resp = client.get(f"{API_BASE}/tyres/{session_key}")
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return None
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_telemetry(
     session_key: int,

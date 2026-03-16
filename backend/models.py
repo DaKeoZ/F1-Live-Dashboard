@@ -201,3 +201,41 @@ class OpenF1Driver(BaseModel):
     full_name: str
     team_name: str
     team_colour: str | None = Field(None, description="Couleur HEX sans #")
+
+
+# ---------------------------------------------------------------------------
+# Stratégie Pneumatiques OpenF1
+# ---------------------------------------------------------------------------
+
+
+class TyreStint(BaseModel):
+    """Un stint (séquence de tours sur un même jeu de pneus)."""
+
+    stint_number: int = Field(..., ge=1)
+    lap_start: int = Field(..., ge=1, description="Tour de début du stint")
+    lap_end: int | None = Field(None, description="Tour de fin du stint (None si course en cours)")
+    compound: str | None = Field(
+        None,
+        description="Composé : SOFT | MEDIUM | HARD | INTERMEDIATE | WET | None",
+    )
+    tyre_age_at_start: int = Field(..., ge=0, description="Âge des pneus en tours au début du stint")
+    laps_in_stint: int | None = Field(None, description="Nombre de tours effectués sur ce jeu")
+    compound_color: str = Field(..., description="Couleur HEX officielle du composé")
+    compound_text_color: str = Field(..., description="Couleur HEX pour le texte sur fond composé")
+
+
+class TyreStrategyResponse(BaseModel):
+    """Réponse de l'endpoint /tyres — stratégie pneus d'un pilote."""
+
+    session_key: int
+    driver_number: int
+    total_stints: int
+    stints: list[TyreStint]
+
+
+class AllTyreStrategiesResponse(BaseModel):
+    """Réponse de l'endpoint /tyres/{session_key} — stratégie de tous les pilotes."""
+
+    session_key: int
+    total_drivers: int
+    strategies: list[TyreStrategyResponse]

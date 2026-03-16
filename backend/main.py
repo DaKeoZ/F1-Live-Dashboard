@@ -9,6 +9,7 @@ import httpx
 
 from api_client import get_constructor_standings, get_driver_standings, get_last_race_results, get_next_race
 from models import (
+    AllTyreStrategiesResponse,
     ConstructorStandingsResponse,
     DriverStandingsResponse,
     LastRaceResponse,
@@ -16,8 +17,15 @@ from models import (
     OpenF1Driver,
     OpenF1Session,
     TelemetryResponse,
+    TyreStrategyResponse,
 )
-from telemetry_service import get_openf1_drivers, get_openf1_sessions, get_telemetry
+from telemetry_service import (
+    get_all_tyre_stints,
+    get_openf1_drivers,
+    get_openf1_sessions,
+    get_telemetry,
+    get_tyre_stints,
+)
 
 app = FastAPI(
     title="F1 Live Dashboard API",
@@ -76,6 +84,38 @@ def constructor_standings(season: str = _SEASON_QUERY):
     """
     try:
         return get_constructor_standings(season=season)
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        _handle_httpx_errors(exc)
+
+
+# ── Stratégie Pneumatiques ────────────────────────────────────────────────────
+
+@app.get("/tyres/{session_key}/{driver_number}", response_model=TyreStrategyResponse)
+def tyre_strategy_single(session_key: int, driver_number: int):
+    """
+    Retourne la stratégie pneumatiques d'un pilote pour une session OpenF1.
+
+    Chaque stint contient : compound, couleur officielle, tour de départ/fin,
+    âge des pneus au départ et nombre de tours effectués.
+    """
+    try:
+        return get_tyre_stints(session_key=session_key, driver_number=driver_number)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        _handle_httpx_errors(exc)
+
+
+@app.get("/tyres/{session_key}", response_model=AllTyreStrategiesResponse)
+def tyre_strategy_all(session_key: int):
+    """
+    Retourne la stratégie pneumatiques de TOUS les pilotes d'une session en un seul appel API.
+    Conçu pour alimenter le Gantt de stratégie multi-pilotes.
+    """
+    try:
+        return get_all_tyre_stints(session_key=session_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         _handle_httpx_errors(exc)
 

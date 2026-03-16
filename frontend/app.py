@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime
 
 import pandas as pd
@@ -77,6 +78,28 @@ TEAM_COLORS: dict[str, str] = {
 
 # Light teams need dark text on their badge
 _LIGHT_TEAMS = {"#64C4FF", "#B6BABD", "#52E252", "#FF8000"}
+
+# Palette officielle Pirelli (doit rester cohérente avec telemetry_service.py)
+COMPOUND_COLORS: dict[str, str] = {
+    "SOFT":         "#E8002D",
+    "MEDIUM":       "#FFF200",
+    "HARD":         "#EBEBEB",
+    "INTERMEDIATE": "#39B54A",
+    "WET":          "#0067FF",
+    "UNKNOWN":      "#555555",
+}
+COMPOUND_TEXT_COLORS: dict[str, str] = {
+    "SOFT":         "#FFFFFF",
+    "MEDIUM":       "#000000",
+    "HARD":         "#000000",
+    "INTERMEDIATE": "#FFFFFF",
+    "WET":          "#FFFFFF",
+    "UNKNOWN":      "#CCCCCC",
+}
+COMPOUND_ABBREVS: dict[str, str] = {
+    "SOFT": "S", "MEDIUM": "M", "HARD": "H",
+    "INTERMEDIATE": "I", "WET": "W", "UNKNOWN": "?",
+}
 
 PODIUM_STYLES = {
     1: {"color": "#FFD700", "label": "🥇", "margin_top": "0px"},
@@ -457,6 +480,139 @@ def _render_telemetry_page() -> None:
         fig.update_xaxes(row=row, showgrid=False, tickfont=dict(color="#888"))
 
     st.plotly_chart(fig, use_container_width=True)
+
+    # ── Section Stratégie Pneumatiques ────────────────────────────────────────
+    st.divider()
+    st.markdown("### 🏎 Stratégie Pneumatiques")
+
+    # Légende des composés
+    legend_html = " &nbsp; ".join(
+        f'<span style="background:{COMPOUND_COLORS[c]}; color:{COMPOUND_TEXT_COLORS[c]}; '
+        f'border-radius:4px; padding:2px 10px; font-size:0.8em; font-weight:700;">'
+        f'{COMPOUND_ABBREVS[c]} {c.title()}</span>'
+        for c in ["SOFT", "MEDIUM", "HARD", "INTERMEDIATE", "WET"]
+    )
+    st.markdown(legend_html, unsafe_allow_html=True)
+    st.write("")
+
+    tab_solo, tab_all = st.tabs(["Pilote sélectionné", "Tous les pilotes — Gantt"])
+
+    # ── Tab 1 : Stints du pilote courant ──────────────────────────────────────
+    with tab_solo:
+        solo_data = f1_api.fetch_tyre_stints(selected_session_key, selected_driver_number)
+
+        if not solo_data or not solo_data.get("stints"):
+            st.info("Aucune donnée de stints disponible pour ce pilote.")
+        else:
+            stints = solo_data["stints"]
+            stint_cols = st.columns(len(stints))
+            for col, stint in zip(stint_cols, stints):
+                c = (stint.get("compound") or "UNKNOWN").upper()
+                bg  = COMPOUND_COLORS.get(c, "#555")
+                txt = COMPOUND_TEXT_COLORS.get(c, "#fff")
+                abbr = COMPOUND_ABBREVS.get(c, "?")
+                lap_start = stint["lap_start"]
+                lap_end   = stint.get("lap_end") or "?"
+                n_laps    = stint.get("laps_in_stint") or "?"
+                age       = stint.get("tyre_age_at_start", 0)
+
+                col.markdown(
+                    f"""
+                    <div style="background:#1A1A1A; border:1px solid {bg}; border-top:4px solid {bg};
+                                border-radius:10px; padding:12px; text-align:center;">
+                        <div style="background:{bg}; color:{txt}; border-radius:20px;
+                                    padding:4px 14px; font-size:1.3em; font-weight:900;
+                                    display:inline-block; margin-bottom:8px;">{abbr}</div>
+                        <div style="font-size:0.8em; color:#AAA;">Stint {stint['stint_number']}</div>
+                        <div style="font-size:1em; color:#FFF; font-weight:700; margin:4px 0;">
+                            Tours {lap_start} → {lap_end}
+                        </div>
+                        <div style="font-size:0.85em; color:#CCC;">{n_laps} tours</div>
+                        <div style="font-size:0.75em; color:#888; margin-top:4px;">
+                            Âge : {age} tour{"s" if age != 1 else ""}
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+    # ── Tab 2 : Gantt multi-pilotes ───────────────────────────────────────────
+    with tab_all:
+        with st.spinner("Récupération des stratégies de tous les pilotes…"):
+            all_data = f1_api.fetch_all_tyre_stints(selected_session_key)
+
+        if not all_data or not all_data.get("strategies"):
+            st.info("Aucune donnée de stratégie disponible pour cette session.")
+        else:
+            # Construire un mapping driver_number → label
+            drv_map = {d["driver_number"]: f"#{d['driver_number']} {d['name_acronym']}" for d in drivers}
+
+            # Regrouper les stints par composé pour les traces Plotly
+            compound_data: dict[str, dict] = defaultdict(lambda: {"y": [], "x": [], "base": [], "hover": []})
+
+            for strategy in all_data["strategies"]:
+                dn = strategy["driver_number"]
+                label = drv_map.get(dn, f"#{dn}")
+                for stint in strategy["stints"]:
+                    c = (stint.get("compound") or "UNKNOWN").upper()
+                    lap_s = stint["lap_start"]
+                    lap_e = stint.get("lap_end") or lap_s
+                    width = max(lap_e - lap_s + 1, 1)
+                    age   = stint.get("tyre_age_at_start", 0)
+                    compound_data[c]["y"].append(label)
+                    compound_data[c]["x"].append(width)
+                    compound_data[c]["base"].append(lap_s)
+                    compound_data[c]["hover"].append(
+                        f"<b>{label}</b><br>"
+                        f"Composé : {c.title()}<br>"
+                        f"Tours : {lap_s} → {lap_e} ({width} tours)<br>"
+                        f"Âge pneu : {age} tour{'s' if age != 1 else ''}"
+                    )
+
+            gantt = go.Figure()
+            for c, d in compound_data.items():
+                color    = COMPOUND_COLORS.get(c, "#555")
+                txt_col  = COMPOUND_TEXT_COLORS.get(c, "#fff")
+                abbr     = COMPOUND_ABBREVS.get(c, "?")
+                gantt.add_trace(go.Bar(
+                    name=c.title(),
+                    x=d["x"],
+                    y=d["y"],
+                    orientation="h",
+                    base=d["base"],
+                    marker=dict(
+                        color=color,
+                        line=dict(color="rgba(0,0,0,0.4)", width=1),
+                    ),
+                    text=[abbr] * len(d["x"]),
+                    textposition="inside",
+                    textfont=dict(color=txt_col, size=10, family="monospace"),
+                    hovertemplate="%{hovertext}<extra></extra>",
+                    hovertext=d["hover"],
+                ))
+
+            n_drivers = all_data["total_drivers"]
+            gantt.update_layout(
+                template="plotly_dark",
+                title=dict(text="<b>Stratégie pneumatiques — vue d'ensemble</b>", font=dict(size=14), x=0),
+                barmode="stack",
+                xaxis=dict(title="Tour", showgrid=True, gridcolor="rgba(255,255,255,0.06)"),
+                yaxis=dict(
+                    categoryorder="category ascending",
+                    tickfont=dict(size=11),
+                    autorange="reversed",
+                ),
+                height=max(350, n_drivers * 28 + 80),
+                margin=dict(l=10, r=10, t=50, b=10),
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+                legend=dict(
+                    orientation="h", yanchor="bottom", y=1.01,
+                    xanchor="right", x=1, font=dict(size=11),
+                ),
+                hoverlabel=dict(bgcolor="#1A1A1A", bordercolor="#E10600", font_color="white"),
+            )
+            st.plotly_chart(gantt, use_container_width=True)
 
 
 # ── Data fetch ────────────────────────────────────────────────────────────────

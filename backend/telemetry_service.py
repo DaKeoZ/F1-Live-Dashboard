@@ -13,13 +13,45 @@ from datetime import datetime
 
 import httpx
 
-from models import OpenF1Driver, OpenF1Session, TelemetryPoint, TelemetryResponse
+from models import (
+    AllTyreStrategiesResponse,
+    OpenF1Driver,
+    OpenF1Session,
+    TelemetryPoint,
+    TelemetryResponse,
+    TyreStint,
+    TyreStrategyResponse,
+)
 
 OPENF1_BASE = "https://api.openf1.org/v1"
 
 # Timeout généreux : le payload car_data peut dépasser 30 000 points JSON
 TIMEOUT_SMALL = 10.0
 TIMEOUT_LARGE = 30.0
+
+# ---------------------------------------------------------------------------
+# Palette pneumatiques officielle Pirelli F1
+# ---------------------------------------------------------------------------
+
+#: Couleur de fond HEX par composé
+COMPOUND_COLORS: dict[str, str] = {
+    "SOFT":         "#E8002D",
+    "MEDIUM":       "#FFF200",
+    "HARD":         "#EBEBEB",
+    "INTERMEDIATE": "#39B54A",
+    "WET":          "#0067FF",
+    "UNKNOWN":      "#555555",
+}
+
+#: Couleur du texte selon le fond (lisibilité)
+COMPOUND_TEXT_COLORS: dict[str, str] = {
+    "SOFT":         "#FFFFFF",
+    "MEDIUM":       "#000000",
+    "HARD":         "#000000",
+    "INTERMEDIATE": "#FFFFFF",
+    "WET":          "#FFFFFF",
+    "UNKNOWN":      "#CCCCCC",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -197,3 +229,98 @@ def get_openf1_drivers(session_key: int) -> list[OpenF1Driver]:
     drivers = [_parse_driver(d) for d in raw]
     drivers.sort(key=lambda d: d.driver_number)
     return drivers
+
+
+# ---------------------------------------------------------------------------
+# Stints / Stratégie pneumatiques
+# ---------------------------------------------------------------------------
+
+
+def _normalise_compound(compound: str | None) -> str:
+    """Normalise le composé en majuscule, remplace None par 'UNKNOWN'."""
+    if not compound:
+        return "UNKNOWN"
+    return compound.strip().upper()
+
+
+def _parse_stint(raw: dict) -> TyreStint:
+    compound_key = _normalise_compound(raw.get("compound"))
+    lap_start = int(raw.get("lap_start") or 1)
+    lap_end   = int(raw["lap_end"]) if raw.get("lap_end") is not None else None
+
+    return TyreStint(
+        stint_number=int(raw.get("stint_number") or 1),
+        lap_start=lap_start,
+        lap_end=lap_end,
+        compound=raw.get("compound"),
+        tyre_age_at_start=int(raw.get("tyre_age_at_start") or 0),
+        laps_in_stint=(lap_end - lap_start + 1) if lap_end is not None else None,
+        compound_color=COMPOUND_COLORS.get(compound_key, COMPOUND_COLORS["UNKNOWN"]),
+        compound_text_color=COMPOUND_TEXT_COLORS.get(compound_key, COMPOUND_TEXT_COLORS["UNKNOWN"]),
+    )
+
+
+def get_tyre_stints(session_key: int, driver_number: int) -> TyreStrategyResponse:
+    """
+    Retourne la stratégie pneumatiques complète d'un pilote sur une session.
+
+    Args:
+        session_key:   Clé de session OpenF1.
+        driver_number: Numéro de voiture.
+
+    Returns:
+        TyreStrategyResponse avec la liste des stints triés chronologiquement.
+    """
+    raw = _get(
+        f"{OPENF1_BASE}/stints",
+        params={"session_key": session_key, "driver_number": driver_number},
+    )
+    if not isinstance(raw, list):
+        raise ValueError(f"Réponse inattendue de l'API OpenF1 stints : {type(raw).__name__}")
+
+    stints = sorted([_parse_stint(s) for s in raw], key=lambda s: s.stint_number)
+
+    return TyreStrategyResponse(
+        session_key=session_key,
+        driver_number=driver_number,
+        total_stints=len(stints),
+        stints=stints,
+    )
+
+
+def get_all_tyre_stints(session_key: int) -> AllTyreStrategiesResponse:
+    """
+    Retourne la stratégie pneumatiques de TOUS les pilotes d'une session en un seul appel API.
+    Utile pour le Gantt de stratégie multi-pilotes.
+
+    Args:
+        session_key: Clé de session OpenF1.
+
+    Returns:
+        AllTyreStrategiesResponse contenant la stratégie de chaque pilote.
+    """
+    raw = _get(f"{OPENF1_BASE}/stints", params={"session_key": session_key})
+    if not isinstance(raw, list):
+        raise ValueError(f"Réponse inattendue de l'API OpenF1 stints : {type(raw).__name__}")
+
+    # Regrouper par pilote
+    by_driver: dict[int, list[dict]] = {}
+    for entry in raw:
+        dn = int(entry["driver_number"])
+        by_driver.setdefault(dn, []).append(entry)
+
+    strategies = [
+        TyreStrategyResponse(
+            session_key=session_key,
+            driver_number=dn,
+            total_stints=len(stints_raw),
+            stints=sorted([_parse_stint(s) for s in stints_raw], key=lambda s: s.stint_number),
+        )
+        for dn, stints_raw in sorted(by_driver.items())
+    ]
+
+    return AllTyreStrategiesResponse(
+        session_key=session_key,
+        total_drivers=len(strategies),
+        strategies=strategies,
+    )
