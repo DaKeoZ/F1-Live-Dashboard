@@ -104,13 +104,20 @@ def _parse_point(raw: dict) -> TelemetryPoint:
     # OpenF1 peut renvoyer des timestamps avec suffixe 'Z' selon les endpoints/points
     # (Python 3.10 ne le parse pas via fromisoformat)
     date_str = str(raw["date"]).replace("Z", "+00:00")
+    # OpenF1 peut fournir des valeurs >100 pour brake/throttle (capteurs/normalisation).
+    # On clamp pour garantir un contrat stable 0–100 côté dashboard.
+    throttle = int(raw.get("throttle") or 0)
+    brake = int(raw.get("brake") or 0)
+    throttle = 0 if throttle < 0 else (100 if throttle > 100 else throttle)
+    brake = 0 if brake < 0 else (100 if brake > 100 else brake)
+
     return TelemetryPoint(
         timestamp=datetime.fromisoformat(date_str),
         speed=int(raw.get("speed") or 0),
         rpm=int(raw.get("rpm") or 0),
         n_gear=int(raw.get("n_gear") or 0),
-        throttle=int(raw.get("throttle") or 0),
-        brake=int(raw.get("brake") or 0),
+        throttle=throttle,
+        brake=brake,
         drs=raw.get("drs"),
     )
 
@@ -177,11 +184,18 @@ def get_telemetry(
     if mode not in ("uniform", "tail"):
         raise ValueError(f"Mode inconnu : '{mode}'. Choisir 'uniform' ou 'tail'.")
 
-    raw_data = _get(
-        f"{OPENF1_BASE}/car_data",
-        params={"session_key": session_key, "driver_number": driver_number},
-        timeout=TIMEOUT_LARGE,
-    )
+    # OpenF1 peut renvoyer 404 "No results found." si aucune donnée n'existe
+    # (ex: session future, session sans car_data publié, etc.)
+    with httpx.Client(timeout=TIMEOUT_LARGE) as client:
+        resp = client.get(
+            f"{OPENF1_BASE}/car_data",
+            params={"session_key": session_key, "driver_number": driver_number},
+        )
+        if resp.status_code == 404:
+            raw_data = []
+        else:
+            resp.raise_for_status()
+            raw_data = resp.json()
 
     if not isinstance(raw_data, list):
         raise ValueError(
