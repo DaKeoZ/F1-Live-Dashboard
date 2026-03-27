@@ -1188,11 +1188,11 @@ else:
             for r in results
         ]
         df_last = pd.DataFrame(rows).set_index("Pos")
-            st.dataframe(
-                df_last,
-                width="stretch",
-                height=420,
-                column_config={
+        st.dataframe(
+            df_last,
+            width="stretch",
+            height=420,
+            column_config={
                 "Pts": st.column_config.NumberColumn("Pts", format="%.0f"),
                 "⚡":  st.column_config.TextColumn("⚡ FL", help="Meilleur tour en course"),
             },
