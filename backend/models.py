@@ -188,9 +188,12 @@ class TelemetryResponse(BaseModel):
 class OpenF1Session(BaseModel):
     """Session de course provenant de l'API OpenF1."""
 
+    meeting_key: int | None = Field(None, description="Identifiant weekend (meeting) OpenF1")
     session_key: int
+    session_type: str | None = Field(None, description="Type OpenF1 (Practice/Qualifying/Race…)")
     session_name: str
     date_start: datetime
+    date_end: datetime | None = Field(None, description="Fin de session si disponible")
     circuit_short_name: str
     country_name: str
     year: int

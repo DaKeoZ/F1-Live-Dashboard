@@ -261,7 +261,7 @@ with st.sidebar:
 
     st.divider()
 
-    if st.button("🔄 Rafraîchir les données", use_container_width=True):
+    if st.button("🔄 Rafraîchir les données", width="stretch"):
         st.cache_data.clear()
         st.rerun()
 
@@ -292,36 +292,96 @@ def _render_telemetry_page() -> None:
     st.caption("Données voiture en temps réel : vitesse, régime, rapport de boîte, gaz, frein, DRS.")
 
     # ── Sélecteurs ────────────────────────────────────────────────────────────
-    col_sess, col_drv, col_opts = st.columns([3, 3, 2], gap="medium")
+    col_weekend, col_sess, col_drv, col_opts = st.columns([3, 3, 3, 2], gap="medium")
+
+    current_year = datetime.now().year
+    sessions_all = f1_api.fetch_openf1_sessions(year=current_year, session_type=None, limit=500)
+    if not sessions_all:
+        st.error("Impossible de récupérer les sessions OpenF1.", icon="🚨")
+        return
+
+    # Weekend (meeting) → sessions
+    by_meeting: dict[int, list[dict]] = defaultdict(list)
+    for s in sessions_all:
+        mk = s.get("meeting_key")
+        if mk is None:
+            continue
+        by_meeting[int(mk)].append(s)
+
+    def _meeting_anchor_dt(items: list[dict]) -> datetime:
+        # On prend la date du Race (si dispo), sinon la dernière session du weekend
+        race = next((x for x in items if (x.get("session_name") or "").strip().lower() == "race"), None)
+        if race:
+            return _parse_dt(race["date_start"])
+        return max((_parse_dt(x["date_start"]) for x in items), default=datetime(1970, 1, 1, tzinfo=timezone.utc))
+
+    meetings_sorted = sorted(by_meeting.items(), key=lambda kv: _meeting_anchor_dt(kv[1]), reverse=True)
+
+    now_utc = datetime.now(timezone.utc)
+    default_meeting_idx = 0
+    for i, (_mk, items) in enumerate(meetings_sorted):
+        if _meeting_anchor_dt(items) <= now_utc:
+            default_meeting_idx = i
+            break
+
+    def _meeting_label(items: list[dict]) -> str:
+        any_s = items[0]
+        country = any_s.get("country_name", "—")
+        circuit = any_s.get("circuit_short_name", "—")
+        dt = _meeting_anchor_dt(items)
+        return f"{circuit} · {country} · {dt.strftime('%Y-%m-%d')}"
+
+    meeting_labels = [_meeting_label(items) for _mk, items in meetings_sorted]
+
+    with col_weekend:
+        selected_meeting_label = st.selectbox(
+            f"Weekend ({current_year})",
+            meeting_labels,
+            index=min(default_meeting_idx, len(meeting_labels) - 1),
+        )
+        selected_meeting_key = meetings_sorted[meeting_labels.index(selected_meeting_label)][0]
+
+    meeting_sessions = by_meeting[selected_meeting_key]
+    meeting_sessions_sorted = sorted(meeting_sessions, key=lambda s: _parse_dt(s["date_start"]))
+
+    def _session_key(s: dict) -> str:
+        stype = (s.get("session_type") or "").strip()
+        sname = (s.get("session_name") or "").strip()
+
+        if stype.lower() == "practice":
+            if "1" in sname:
+                return "FP1"
+            if "2" in sname:
+                return "FP2"
+            if "3" in sname:
+                return "FP3"
+            return "Practice"
+        if sname.lower() == "sprint qualifying":
+            return "SprintQualifying"
+        if sname.lower() == "sprint":
+            return "Sprint"
+        if stype.lower() == "qualifying":
+            return "Qualifying"
+        if sname.lower() == "race":
+            return "Race"
+        return sname or stype or "Session"
 
     with col_sess:
-        current_year = datetime.now().year
-        sessions = f1_api.fetch_openf1_sessions(year=current_year)
-        if not sessions:
-            st.error("Impossible de récupérer les sessions OpenF1.", icon="🚨")
-            return
+        session_options: dict[str, int] = {}
+        for s in meeting_sessions_sorted:
+            key = _session_key(s)
+            label = SESSION_LABELS.get(key, key)
+            dt = _parse_dt(s["date_start"]).strftime("%a %d %b · %H:%M UTC")
+            session_options[f"{label} — {dt}"] = int(s["session_key"])
 
-        # Sessions déjà triées du plus récent au plus ancien (backend)
-        # On calcule l'index par défaut : session la plus proche de maintenant
-        # (en cours ou la plus récemment démarrée)
-        now_utc = datetime.now(timezone.utc)
-        default_idx = 0
-        for i, s in enumerate(sessions):
-            session_dt = _parse_dt(s["date_start"])
-            if session_dt <= now_utc:
-                default_idx = i
-                break  # Sessions triées décroissantes → premier <= now = le plus proche
-
-        session_options = {
-            f"{s['circuit_short_name']} {s['date_start'][:10]} — {s['session_name']}": s["session_key"]
-            for s in sessions
-        }
         session_labels = list(session_options.keys())
-        selected_session_label = st.selectbox(
-            f"Session ({current_year})",
-            session_labels,
-            index=default_idx,
-        )
+        default_idx = 0
+        for i, s in enumerate(meeting_sessions_sorted):
+            if _parse_dt(s["date_start"]) <= now_utc:
+                default_idx = i
+                break
+
+        selected_session_label = st.selectbox("Session", session_labels, index=min(default_idx, len(session_labels) - 1))
         selected_session_key = session_options[selected_session_label]
 
     with col_drv:
@@ -339,7 +399,7 @@ def _render_telemetry_page() -> None:
 
     with col_opts:
         # Détecter si la session est terminée pour proposer un mode adapté
-        _sel_session = next((s for s in sessions if s["session_key"] == selected_session_key), None)
+        _sel_session = next((s for s in meeting_sessions_sorted if s["session_key"] == selected_session_key), None)
         _session_ended = (
             _sel_session is not None
             and _parse_dt(_sel_session["date_start"]) < now_utc - __import__("datetime").timedelta(hours=3)
@@ -364,7 +424,7 @@ def _render_telemetry_page() -> None:
         )
 
     # ── Fetch & affichage ────────────────────────────────────────────────────
-    if st.button("⚡ Charger la télémétrie", type="primary", use_container_width=True):
+    if st.button("⚡ Charger la télémétrie", type="primary", width="stretch"):
         # Invalider uniquement les caches de télémétrie et stints (pas le tracé circuit)
         f1_api.fetch_telemetry.clear()
         f1_api.fetch_tyre_stints.clear()
@@ -533,7 +593,7 @@ def _render_telemetry_page() -> None:
     for row in range(1, 5):
         fig.update_xaxes(row=row, showgrid=False, tickfont=dict(color="#888"))
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # ── Section Carte Circuit ─────────────────────────────────────────────────
     st.divider()
@@ -646,7 +706,7 @@ def _render_telemetry_page() -> None:
             showlegend=False,
             hoverlabel=dict(bgcolor="#1A1A1A", bordercolor="#E10600", font_color="white"),
         )
-        st.plotly_chart(circuit_fig, use_container_width=True)
+        st.plotly_chart(circuit_fig, width="stretch")
 
         # Tableau des positions
         with st.expander("📋 Tableau des positions"):
@@ -663,7 +723,7 @@ def _render_telemetry_page() -> None:
                 for p in positions
             ]
             df_pos = pd.DataFrame(rows_pos).set_index("N°")
-            st.dataframe(df_pos, use_container_width=True, height=350)
+            st.dataframe(df_pos, width="stretch", height=350)
 
     # ── Section Stratégie Pneumatiques ────────────────────────────────────────
     st.divider()
@@ -796,7 +856,7 @@ def _render_telemetry_page() -> None:
                 ),
                 hoverlabel=dict(bgcolor="#1A1A1A", bordercolor="#E10600", font_color="white"),
             )
-            st.plotly_chart(gantt, use_container_width=True)
+            st.plotly_chart(gantt, width="stretch")
 
     # ── Vue Live ──────────────────────────────────────────────────────────────
     st.divider()
@@ -889,7 +949,7 @@ def _render_telemetry_page() -> None:
                 legend=dict(orientation="h", y=1.14, font=dict(size=10)),
                 hoverlabel=dict(bgcolor="#1A1A1A", font_color="white"),
             )
-            st.plotly_chart(fig_live, use_container_width=True)
+            st.plotly_chart(fig_live, width="stretch")
 
         # ── Jauge Rapport de boîte ─────────────────────────────────────────────
         with col_gear:
@@ -927,7 +987,7 @@ def _render_telemetry_page() -> None:
                 paper_bgcolor="rgba(0,0,0,0)",
                 font=dict(color="white"),
             )
-            st.plotly_chart(fig_gear, use_container_width=True)
+            st.plotly_chart(fig_gear, width="stretch")
 
         # ── Badge Pneu ────────────────────────────────────────────────────────
         with col_tyre:
@@ -1128,11 +1188,11 @@ else:
             for r in results
         ]
         df_last = pd.DataFrame(rows).set_index("Pos")
-        st.dataframe(
-            df_last,
-            use_container_width=True,
-            height=420,
-            column_config={
+            st.dataframe(
+                df_last,
+                width="stretch",
+                height=420,
+                column_config={
                 "Pts": st.column_config.NumberColumn("Pts", format="%.0f"),
                 "⚡":  st.column_config.TextColumn("⚡ FL", help="Meilleur tour en course"),
             },
@@ -1250,7 +1310,7 @@ with col_chart:
             font_size=13,
         ),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 # ── Tableau complet du classement ────────────────────────────────────────────
 with col_table:
@@ -1292,7 +1352,7 @@ with col_table:
 
     st.dataframe(
         df,
-        use_container_width=True,
+        width="stretch",
         height=430,
         column_config=column_config,
     )

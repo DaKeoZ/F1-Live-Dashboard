@@ -101,8 +101,11 @@ def _tail_sample(data: list[dict], n: int) -> list[dict]:
 
 def _parse_point(raw: dict) -> TelemetryPoint:
     """Convertit un point brut OpenF1 en TelemetryPoint Pydantic."""
+    # OpenF1 peut renvoyer des timestamps avec suffixe 'Z' selon les endpoints/points
+    # (Python 3.10 ne le parse pas via fromisoformat)
+    date_str = str(raw["date"]).replace("Z", "+00:00")
     return TelemetryPoint(
-        timestamp=datetime.fromisoformat(raw["date"]),
+        timestamp=datetime.fromisoformat(date_str),
         speed=int(raw.get("speed") or 0),
         rpm=int(raw.get("rpm") or 0),
         n_gear=int(raw.get("n_gear") or 0),
@@ -114,9 +117,16 @@ def _parse_point(raw: dict) -> TelemetryPoint:
 
 def _parse_session(raw: dict) -> OpenF1Session:
     return OpenF1Session(
+        meeting_key=raw.get("meeting_key"),
         session_key=raw["session_key"],
+        session_type=raw.get("session_type"),
         session_name=raw.get("session_name", raw.get("session_type", "—")),
-        date_start=datetime.fromisoformat(raw["date_start"]),
+        date_start=datetime.fromisoformat(str(raw["date_start"]).replace("Z", "+00:00")),
+        date_end=(
+            datetime.fromisoformat(str(raw["date_end"]).replace("Z", "+00:00"))
+            if raw.get("date_end")
+            else None
+        ),
         circuit_short_name=raw.get("circuit_short_name", "—"),
         country_name=raw.get("country_name", "—"),
         year=int(raw.get("year", 0)),
@@ -198,7 +208,7 @@ def get_telemetry(
 
 def get_openf1_sessions(
     year: int | None = None,
-    session_type: str = "Race",
+    session_type: str | None = "Race",
     limit: int = 20,
 ) -> list[OpenF1Session]:
     """
@@ -209,7 +219,9 @@ def get_openf1_sessions(
         session_type: Type de session ("Race", "Qualifying", "Sprint"…).
         limit:        Nombre maximum de sessions à retourner.
     """
-    params: dict = {"session_type": session_type}
+    params: dict = {}
+    if session_type:
+        params["session_type"] = session_type
     if year is not None:
         params["year"] = year
 

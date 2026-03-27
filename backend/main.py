@@ -190,8 +190,8 @@ def last_race_results():
 @app.get("/telemetry/sessions", response_model=list[OpenF1Session])
 def telemetry_sessions(
     year: int | None = Query(default=None, description="Filtrer par année (ex: 2026)"),
-    session_type: str = Query(default="Race", description="Type de session OpenF1"),
-    limit: int = Query(default=50, ge=1, le=100),
+    session_type: str | None = Query(default=None, description="Type de session OpenF1 (None = toutes)"),
+    limit: int = Query(default=150, ge=1, le=500),
 ):
     """
     Liste les sessions OpenF1 disponibles, triées de la plus récente à la plus ancienne.

@@ -11,8 +11,8 @@ import os
 import httpx
 import streamlit as st
 
-# En Docker, passer API_BASE_URL=http://backend:8000 via docker-compose.
-# En local, la valeur par défaut http://localhost:8000 fonctionne directement.
+# En Docker, passer API_BASE_URL=http://backend:9797 via docker-compose.
+# En local, la valeur par défaut http://localhost:9797 fonctionne directement.
 API_BASE = os.getenv("API_BASE_URL", "http://localhost:9797")
 TIMEOUT = 10.0
 
@@ -68,10 +68,16 @@ def fetch_last_race() -> dict | None:
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def fetch_openf1_sessions(year: int | None = None, session_type: str = "Race") -> list[dict]:
+def fetch_openf1_sessions(
+    year: int | None = None,
+    session_type: str | None = None,
+    limit: int = 500,
+) -> list[dict]:
     """Retourne les sessions OpenF1 disponibles."""
     try:
-        params: dict = {"session_type": session_type, "limit": 100}
+        params: dict = {"limit": limit}
+        if session_type:
+            params["session_type"] = session_type
         if year:
             params["year"] = year
         with httpx.Client(timeout=TIMEOUT) as client:
