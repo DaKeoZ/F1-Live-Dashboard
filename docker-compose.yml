@@ -5,6 +5,12 @@ services:
       context: ./backend
     ports:
       - "9797:9797"
+    environment:
+      # OpenF1 (télémétrie live) : https://openf1.org/auth.html
+      # Définir dans un fichier .env à la racine ou exporter dans le shell.
+      OPENF1_USERNAME: ${OPENF1_USERNAME:-}
+      OPENF1_PASSWORD: ${OPENF1_PASSWORD:-}
+      OPENF1_ACCESS_TOKEN: ${OPENF1_ACCESS_TOKEN:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9797/')"]

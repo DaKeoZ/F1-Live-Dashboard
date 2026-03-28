@@ -242,6 +242,10 @@ GET /location/11234/1?sample_size=500
 
 ## Notes techniques
 
+- **OpenF1 — authentification (live)** : l’API OpenF1 peut répondre **401 Unauthorized** sans jeton (notamment pendant une session en direct). Configurez le **backend** avec l’un des deux modes documentés sur [openf1.org/auth](https://openf1.org/auth.html) :
+  - **`OPENF1_USERNAME` + `OPENF1_PASSWORD`** : le backend obtient un jeton OAuth2 sur `https://api.openf1.org/token` et le renouvelle avant expiration (environ 1 h).
+  - **`OPENF1_ACCESS_TOKEN`** : jeton Bearer fixe (à renouveler manuellement ou par script lorsque OpenF1 expire le token).
+  - Avec Docker Compose, définissez ces variables dans un fichier `.env` à côté du `docker-compose*.yml` ou exportez-les avant `docker compose up`.
 - **Ports** : backend sur `9797`, frontend sur `9798`. En Docker, la variable `API_BASE_URL=http://backend:9797` est injectée dans le conteneur frontend via docker-compose.
 - **Rate-limiting OpenF1** : `/location` refuse les requêtes sans `driver_number`. Le backend effectue jusqu'à 21 appels en parallèle (max 3 workers) avec 3 passes de retry automatique.
 - **Volumes de données** : `/car_data` et `/location` retournent ~32 000 points par pilote par session. Les données sont sous-échantillonnées avant renvoi (télémétrie : 10–2 000 pts ; tracé circuit : points consécutifs d'un tour).

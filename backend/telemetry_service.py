@@ -10,6 +10,8 @@ Stratégies d'échantillonnage disponibles :
 from __future__ import annotations
 
 import concurrent.futures
+import os
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -30,10 +32,113 @@ from models import (
 )
 
 OPENF1_BASE = "https://api.openf1.org/v1"
+OPENF1_TOKEN_URL = "https://api.openf1.org/token"
 
 # Timeout généreux : le payload car_data peut dépasser 30 000 points JSON
 TIMEOUT_SMALL = 10.0
 TIMEOUT_LARGE = 30.0
+
+# OpenF1 exige un jeton Bearer pour les données live et pour de nombreux endpoints.
+# Voir https://openf1.org/auth.html
+_token_lock = threading.Lock()
+_token_refresh_lock = threading.Lock()
+_cached_access_token: str | None = None
+_cached_token_expiry_monotonic: float = 0.0
+
+
+def _invalidate_openf1_token_cache() -> None:
+    global _cached_access_token, _cached_token_expiry_monotonic
+    with _token_lock:
+        _cached_access_token = None
+        _cached_token_expiry_monotonic = 0.0
+
+
+def _exchange_openf1_password_for_token() -> tuple[str, int]:
+    username = os.getenv("OPENF1_USERNAME", "").strip()
+    password = os.getenv("OPENF1_PASSWORD", "").strip()
+    if not username or not password:
+        raise RuntimeError("OPENF1_USERNAME et OPENF1_PASSWORD sont requis pour obtenir un jeton.")
+
+    with httpx.Client(timeout=TIMEOUT_SMALL) as client:
+        resp = client.post(
+            OPENF1_TOKEN_URL,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={"username": username, "password": password},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    token = data.get("access_token")
+    if not token:
+        raise RuntimeError("Réponse OpenF1 /token sans access_token.")
+    # expires_in est souvent une chaîne ("3600")
+    expires_in = int(data.get("expires_in", 3600))
+    return str(token), expires_in
+
+
+def _get_openf1_bearer_token() -> str | None:
+    """
+    Retourne un jeton Bearer si les variables d'environnement le permettent, sinon None.
+    Ordre : OPENF1_ACCESS_TOKEN fixe, puis couple OPENF1_USERNAME / OPENF1_PASSWORD (OAuth2).
+    """
+    static = os.getenv("OPENF1_ACCESS_TOKEN", "").strip()
+    if static:
+        return static
+
+    u = os.getenv("OPENF1_USERNAME", "").strip()
+    p = os.getenv("OPENF1_PASSWORD", "").strip()
+    if not u or not p:
+        return None
+
+    global _cached_access_token, _cached_token_expiry_monotonic
+    now = time.monotonic()
+    with _token_lock:
+        if _cached_access_token and now < _cached_token_expiry_monotonic - 120:
+            return _cached_access_token
+
+    with _token_refresh_lock:
+        now = time.monotonic()
+        with _token_lock:
+            if _cached_access_token and now < _cached_token_expiry_monotonic - 120:
+                return _cached_access_token
+        token, expires_in = _exchange_openf1_password_for_token()
+        with _token_lock:
+            _cached_access_token = token
+            _cached_token_expiry_monotonic = time.monotonic() + expires_in
+        return token
+
+
+def _openf1_request_headers() -> dict[str, str]:
+    headers = {"accept": "application/json"}
+    token = _get_openf1_bearer_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _openf1_get(
+    url: str,
+    params: dict,
+    timeout: float,
+    *,
+    empty_on_404: bool = False,
+) -> list | dict:
+    """GET OpenF1 avec en-tête Bearer si configuré ; un retry après invalidation du cache si 401."""
+    headers = _openf1_request_headers()
+    with httpx.Client(timeout=timeout) as client:
+        resp = client.get(url, params=params, headers=headers)
+
+    if resp.status_code == 401 and os.getenv("OPENF1_USERNAME") and os.getenv("OPENF1_PASSWORD"):
+        _invalidate_openf1_token_cache()
+        headers = _openf1_request_headers()
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.get(url, params=params, headers=headers)
+
+    if empty_on_404 and resp.status_code == 404:
+        return []
+
+    resp.raise_for_status()
+    return resp.json()
 
 # ---------------------------------------------------------------------------
 # Palette pneumatiques officielle Pirelli F1
@@ -66,10 +171,7 @@ COMPOUND_TEXT_COLORS: dict[str, str] = {
 
 
 def _get(url: str, params: dict, timeout: float = TIMEOUT_SMALL) -> list | dict:
-    with httpx.Client(timeout=timeout) as client:
-        resp = client.get(url, params=params)
-        resp.raise_for_status()
-        return resp.json()
+    return _openf1_get(url, params, timeout, empty_on_404=False)
 
 
 # ---------------------------------------------------------------------------
@@ -186,16 +288,12 @@ def get_telemetry(
 
     # OpenF1 peut renvoyer 404 "No results found." si aucune donnée n'existe
     # (ex: session future, session sans car_data publié, etc.)
-    with httpx.Client(timeout=TIMEOUT_LARGE) as client:
-        resp = client.get(
-            f"{OPENF1_BASE}/car_data",
-            params={"session_key": session_key, "driver_number": driver_number},
-        )
-        if resp.status_code == 404:
-            raw_data = []
-        else:
-            resp.raise_for_status()
-            raw_data = resp.json()
+    raw_data = _openf1_get(
+        f"{OPENF1_BASE}/car_data",
+        params={"session_key": session_key, "driver_number": driver_number},
+        timeout=TIMEOUT_LARGE,
+        empty_on_404=True,
+    )
 
     if not isinstance(raw_data, list):
         raise ValueError(
