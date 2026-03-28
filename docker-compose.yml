@@ -26,6 +26,8 @@ services:
       - "9798:9798"
     environment:
       - API_BASE_URL=http://backend:9797   # réseau Docker interne
+      # URL publique du backend pour WebSocket MQTT (navigateur). Ex. http://localhost:9797 ou https://domaine/api
+      - PUBLIC_API_BASE_URL=${PUBLIC_API_BASE_URL:-}
     depends_on:
       backend:
         condition: service_healthy

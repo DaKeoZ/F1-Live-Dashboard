@@ -3,7 +3,9 @@ F1 Live Dashboard — Backend API
 Point d'entrée FastAPI.
 """
 
-from fastapi import FastAPI, HTTPException, Query
+import asyncio
+
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
@@ -21,7 +23,9 @@ from models import (
     TelemetryResponse,
     TyreStrategyResponse,
 )
+from live_mqtt_bridge import CarDataMqttBridge
 from telemetry_service import (
+    _get_openf1_bearer_token,
     get_all_tyre_stints,
     get_car_path,
     get_last_positions,
@@ -186,6 +190,42 @@ def last_race_results():
 
 
 # ── Télémétrie OpenF1 ─────────────────────────────────────────────────────────
+
+
+@app.get("/telemetry/live-capable")
+def telemetry_live_capable():
+    """Indique si un jeton OpenF1 est disponible (MQTT / REST authentifiés)."""
+    return {"live_mqtt": bool(_get_openf1_bearer_token())}
+
+
+@app.websocket("/ws/telemetry/{session_key}/{driver_number}")
+async def websocket_telemetry_stream(session_key: int, driver_number: int, websocket: WebSocket):
+    """
+    Relai temps réel : souscription MQTT OpenF1 (v1/car_data) filtrée → messages JSON vers le navigateur.
+    Le jeton OAuth2 ne quitte jamais le backend.
+    """
+    await websocket.accept()
+    bridge = CarDataMqttBridge(session_key, driver_number)
+    try:
+        bridge.start()
+    except Exception as exc:
+        try:
+            await websocket.send_json({"error": str(exc), "type": "mqtt_error"})
+        except Exception:
+            pass
+        await websocket.close(code=4000)
+        return
+    try:
+        while True:
+            msg = await asyncio.to_thread(bridge.get_blocking, 0.35)
+            if msg is None:
+                continue
+            await websocket.send_json(msg)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        bridge.stop()
+
 
 @app.get("/telemetry/sessions", response_model=list[OpenF1Session])
 def telemetry_sessions(

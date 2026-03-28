@@ -17,6 +17,42 @@ API_BASE = os.getenv("API_BASE_URL", "http://localhost:9797")
 TIMEOUT = 10.0
 
 
+def get_public_http_base() -> str:
+    """
+    URL HTTP du backend telle que le navigateur y accède (pas le nom de service Docker « backend »).
+    En prod derrière Nginx : https://domaine/api
+    """
+    pub = os.getenv("PUBLIC_API_BASE_URL", "").strip()
+    if pub:
+        return pub.rstrip("/")
+    ab = os.getenv("API_BASE_URL", "http://localhost:9797")
+    if "backend" in ab:
+        return "http://127.0.0.1:9797"
+    return ab.rstrip("/")
+
+
+def websocket_telemetry_url(session_key: int, driver_number: int) -> str:
+    """ws(s)://…/ws/telemetry/{session_key}/{driver_number} — pour le composant HTML live."""
+    base = get_public_http_base()
+    if base.startswith("https://"):
+        return f"wss://{base[8:]}/ws/telemetry/{session_key}/{driver_number}"
+    if base.startswith("http://"):
+        return f"ws://{base[7:]}/ws/telemetry/{session_key}/{driver_number}"
+    return f"{base}/ws/telemetry/{session_key}/{driver_number}"
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_live_mqtt_capable() -> bool:
+    """True si le backend a un jeton OpenF1 (endpoint /telemetry/live-capable)."""
+    try:
+        with httpx.Client(timeout=TIMEOUT) as client:
+            resp = client.get(f"{API_BASE}/telemetry/live-capable")
+            resp.raise_for_status()
+            return bool(resp.json().get("live_mqtt"))
+    except Exception:
+        return False
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_next_race() -> dict | None:
     """Retourne la prochaine course ou None si saison terminée / backend indisponible."""
@@ -137,17 +173,41 @@ def fetch_last_positions(session_key: int) -> dict | None:
 
 
 @st.cache_data(ttl=5, show_spinner=False)
-def fetch_live_telemetry(session_key: int, driver_number: int, sample_size: int = 100) -> dict | None:
+def fetch_telemetry_tail(
+    session_key: int,
+    driver_number: int,
+    sample_size: int = 100,
+) -> dict | None:
     """
-    Télémétrie live en mode tail (TTL=5 s).
-    Conçue pour le polling automatique : le cache expire toutes les 5 secondes,
-    ce qui garantit des données fraîches à chaque rafraîchissement du fragment.
+    Télémétrie mode tail (derniers points). TTL court pour le direct : re-fetch ~5 s.
+    Utilisé par le graphique principal en « Temps réel » et par la Vue Live.
     """
     try:
         with httpx.Client(timeout=15.0) as client:
             resp = client.get(
                 f"{API_BASE}/telemetry/{session_key}/{driver_number}",
                 params={"sample_size": sample_size, "mode": "tail"},
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def fetch_telemetry_uniform(
+    session_key: int,
+    driver_number: int,
+    sample_size: int = 1000,
+) -> dict | None:
+    """
+    Vue course complète (échantillonnage uniforme). Cache plus long : données stables après la session.
+    """
+    try:
+        with httpx.Client(timeout=35.0) as client:
+            resp = client.get(
+                f"{API_BASE}/telemetry/{session_key}/{driver_number}",
+                params={"sample_size": sample_size, "mode": "uniform"},
             )
             resp.raise_for_status()
             return resp.json()
@@ -170,21 +230,3 @@ def fetch_car_path(session_key: int, driver_number: int, sample_size: int = 500)
         return None
 
 
-@st.cache_data(ttl=60, show_spinner=False)
-def fetch_telemetry(
-    session_key: int,
-    driver_number: int,
-    sample_size: int = 100,
-    mode: str = "uniform",
-) -> dict | None:
-    """Retourne les données de télémétrie échantillonnées pour un pilote."""
-    try:
-        with httpx.Client(timeout=35.0) as client:
-            resp = client.get(
-                f"{API_BASE}/telemetry/{session_key}/{driver_number}",
-                params={"sample_size": sample_size, "mode": mode},
-            )
-            resp.raise_for_status()
-            return resp.json()
-    except Exception:
-        return None

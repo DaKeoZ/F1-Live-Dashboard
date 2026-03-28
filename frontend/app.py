@@ -9,8 +9,10 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
+import streamlit.components.v1 as components
 
 import api as f1_api
+from mqtt_live_html import build_mqtt_live_embed
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -396,6 +398,12 @@ def _render_telemetry_page() -> None:
         }
         selected_driver_label  = st.selectbox("Pilote", list(driver_options.keys()))
         selected_driver_number = driver_options[selected_driver_label]
+        _drv_sel = next((d for d in drivers if d["driver_number"] == selected_driver_number), None)
+        drv_colour = (
+            f"#{_drv_sel['team_colour'].lstrip('#')}"
+            if _drv_sel and _drv_sel.get("team_colour")
+            else "#E10600"
+        )
 
     with col_opts:
         # Détecter si la session est terminée pour proposer un mode adapté
@@ -423,177 +431,200 @@ def _render_telemetry_page() -> None:
             horizontal=True,
         )
 
-    # ── Fetch & affichage ────────────────────────────────────────────────────
+    # ── Fetch & graphique principal ───────────────────────────────────────────
     if st.button("⚡ Charger la télémétrie", type="primary", width="stretch"):
         # Invalider uniquement les caches de télémétrie et stints (pas le tracé circuit)
-        f1_api.fetch_telemetry.clear()
+        f1_api.fetch_telemetry_uniform.clear()
+        f1_api.fetch_telemetry_tail.clear()
         f1_api.fetch_tyre_stints.clear()
         f1_api.fetch_all_tyre_stints.clear()
 
-    with st.spinner("Récupération des données OpenF1… (peut prendre 5-15 s)"):
-        telem = f1_api.fetch_telemetry(
-            session_key=selected_session_key,
-            driver_number=selected_driver_number,
-            sample_size=sample_size,
-            mode=mode,
+    # En session en cours + mode tail : rafraîchir le grand graphique toutes les 5 s
+    # (sinon Streamlit ne relance pas la page et les données restaient « figées » ~60 s).
+    poll_main_charts = mode == "tail" and not _session_ended
+
+    def _render_main_telemetry_charts() -> bool:
+        with st.spinner("Récupération des données OpenF1… (peut prendre 5-15 s)"):
+            if mode == "uniform":
+                telem = f1_api.fetch_telemetry_uniform(
+                    session_key=selected_session_key,
+                    driver_number=selected_driver_number,
+                    sample_size=sample_size,
+                )
+            else:
+                telem = f1_api.fetch_telemetry_tail(
+                    session_key=selected_session_key,
+                    driver_number=selected_driver_number,
+                    sample_size=sample_size,
+                )
+
+        if telem is None:
+            st.error(
+                "Impossible de récupérer la télémétrie. "
+                "Vérifiez que le backend tourne, les identifiants OpenF1 (si requis) et que la session contient des données.",
+                icon="🚨",
+            )
+            return False
+
+        points = telem["points"]
+        if not points:
+            st.warning("Aucune donnée de télémétrie disponible pour ce pilote / cette session.")
+            return False
+
+        raw_pts  = telem["total_raw_points"]
+        samp_pts = telem["sample_size"]
+        ratio    = raw_pts / samp_pts if samp_pts else 0
+        info_col1, info_col2, info_col3, info_col4 = st.columns(4)
+        info_col1.metric("Points bruts", f"{raw_pts:,}")
+        info_col2.metric("Points affichés", samp_pts)
+        info_col3.metric("Facteur compression", f"1 / {ratio:.0f}×")
+        info_col4.metric("Mode", telem["sample_method"].upper())
+
+        times     = [_parse_dt(p["timestamp"]) for p in points]
+        speeds    = [p["speed"]    for p in points]
+        rpms      = [p["rpm"]      for p in points]
+        gears     = [p["n_gear"]   for p in points]
+        throttles = [p["throttle"] for p in points]
+        brakes    = [p["brake"]    for p in points]
+        drs_vals  = [1 if (p.get("drs") or 0) >= 10 else 0 for p in points]
+
+        st.markdown("---")
+        s1, s2, s3, s4, s5 = st.columns(5)
+        s1.metric("Vitesse max",   f"{max(speeds)} km/h")
+        s2.metric("Vitesse moy",   f"{sum(speeds)//len(speeds)} km/h")
+        s3.metric("RPM max",       f"{max(rpms):,}")
+        s4.metric("Rapport max",   f"R{max(gears)}")
+        s5.metric("DRS actif",     f"{sum(drs_vals)} pts")
+        if poll_main_charts:
+            st.caption(
+                "🔄 Session en cours : graphique principal actualisé ~toutes les 5 s (mode Temps réel)."
+            )
+
+        fig = make_subplots(
+            rows=4,
+            cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.04,
+            subplot_titles=("Vitesse (km/h)", "Régime moteur (RPM)", "Rapport de boîte", "Gaz / Frein (%)"),
+            row_heights=[0.35, 0.25, 0.15, 0.25],
         )
 
-    if telem is None:
-        st.error(
-            "Impossible de récupérer la télémétrie. "
-            "Vérifiez que le backend tourne et que la session contient des données.",
-            icon="🚨",
+        fig.add_trace(
+            go.Scatter(
+                x=times, y=speeds,
+                mode="lines",
+                name="Vitesse",
+                line=dict(color=drv_colour, width=2),
+                fill="tozeroy",
+                fillcolor=_hex_to_rgba(drv_colour, 0.09),
+                hovertemplate="<b>%{y} km/h</b><br>%{x|%H:%M:%S}<extra></extra>",
+            ),
+            row=1, col=1,
         )
-        return
+        fig.add_trace(
+            go.Scatter(
+                x=times, y=[s if d else None for s, d in zip(speeds, drs_vals)],
+                mode="lines",
+                name="DRS ouvert",
+                line=dict(color="#00FF88", width=3, dash="dot"),
+                hovertemplate="DRS actif — %{y} km/h<extra></extra>",
+            ),
+            row=1, col=1,
+        )
 
-    points = telem["points"]
-    if not points:
-        st.warning("Aucune donnée de télémétrie disponible pour ce pilote / cette session.")
-        return
+        fig.add_trace(
+            go.Scatter(
+                x=times, y=rpms,
+                mode="lines",
+                name="RPM",
+                line=dict(color="#FF8000", width=1.5),
+                hovertemplate="<b>%{y:,} RPM</b><br>%{x|%H:%M:%S}<extra></extra>",
+            ),
+            row=2, col=1,
+        )
 
-    # ── Metadata banner ───────────────────────────────────────────────────────
-    raw_pts  = telem["total_raw_points"]
-    samp_pts = telem["sample_size"]
-    ratio    = raw_pts / samp_pts if samp_pts else 0
-    info_col1, info_col2, info_col3, info_col4 = st.columns(4)
-    info_col1.metric("Points bruts", f"{raw_pts:,}")
-    info_col2.metric("Points affichés", samp_pts)
-    info_col3.metric("Facteur compression", f"1 / {ratio:.0f}×")
-    info_col4.metric("Mode", telem["sample_method"].upper())
+        fig.add_trace(
+            go.Scatter(
+                x=times, y=gears,
+                mode="lines",
+                name="Rapport",
+                line=dict(color="#CCCCCC", width=2, shape="hv"),
+                hovertemplate="<b>Rapport %{y}</b><br>%{x|%H:%M:%S}<extra></extra>",
+            ),
+            row=3, col=1,
+        )
 
-    # ── Préparation des séries ────────────────────────────────────────────────
-    times     = [_parse_dt(p["timestamp"]) for p in points]
-    speeds    = [p["speed"]    for p in points]
-    rpms      = [p["rpm"]      for p in points]
-    gears     = [p["n_gear"]   for p in points]
-    throttles = [p["throttle"] for p in points]
-    brakes    = [p["brake"]    for p in points]
-    drs_vals  = [1 if (p.get("drs") or 0) >= 10 else 0 for p in points]
+        fig.add_trace(
+            go.Scatter(
+                x=times, y=throttles,
+                mode="lines",
+                name="Gaz",
+                line=dict(color="#00CC44", width=1.5),
+                fill="tozeroy",
+                fillcolor="rgba(0,204,68,0.12)",
+                hovertemplate="Gaz : <b>%{y}%%</b><extra></extra>",
+            ),
+            row=4, col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=times, y=brakes,
+                mode="lines",
+                name="Frein",
+                line=dict(color="#E10600", width=1.5),
+                fill="tozeroy",
+                fillcolor="rgba(225,6,0,0.12)",
+                hovertemplate="Frein : <b>%{y}%%</b><extra></extra>",
+            ),
+            row=4, col=1,
+        )
 
-    # Couleur de l'écurie du pilote sélectionné
-    drv_data   = next((d for d in drivers if d["driver_number"] == selected_driver_number), None)
-    drv_colour = f"#{drv_data['team_colour'].lstrip('#')}" if drv_data and drv_data.get("team_colour") else "#E10600"
+        fig.update_layout(
+            template="plotly_dark",
+            height=680,
+            margin=dict(l=10, r=10, t=60, b=10),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            legend=dict(
+                orientation="h",
+                yanchor="bottom", y=1.01,
+                xanchor="right",  x=1,
+                font=dict(size=11),
+            ),
+            hoverlabel=dict(bgcolor="#1A1A1A", bordercolor=drv_colour, font_color="white"),
+            hovermode="x unified",
+        )
+        fig.update_yaxes(row=1, gridcolor="rgba(255,255,255,0.06)", range=[0, 380])
+        fig.update_yaxes(row=2, gridcolor="rgba(255,255,255,0.06)", range=[0, 20000])
+        fig.update_yaxes(row=3, gridcolor="rgba(255,255,255,0.06)", range=[0, 9], dtick=1)
+        fig.update_yaxes(row=4, gridcolor="rgba(255,255,255,0.06)", range=[0, 105])
+        for row in range(1, 5):
+            fig.update_xaxes(row=row, showgrid=False, tickfont=dict(color="#888"))
 
-    # ── Stats rapides ─────────────────────────────────────────────────────────
-    st.markdown("---")
-    s1, s2, s3, s4, s5 = st.columns(5)
-    s1.metric("Vitesse max",   f"{max(speeds)} km/h")
-    s2.metric("Vitesse moy",   f"{sum(speeds)//len(speeds)} km/h")
-    s3.metric("RPM max",       f"{max(rpms):,}")
-    s4.metric("Rapport max",   f"R{max(gears)}")
-    s5.metric("DRS actif",     f"{sum(drs_vals)} pts")
+        st.plotly_chart(fig, width="stretch")
+        return True
 
-    # ── Plotly subplots ───────────────────────────────────────────────────────
-    fig = make_subplots(
-        rows=4,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.04,
-        subplot_titles=("Vitesse (km/h)", "Régime moteur (RPM)", "Rapport de boîte", "Gaz / Frein (%)"),
-        row_heights=[0.35, 0.25, 0.15, 0.25],
-    )
+    if poll_main_charts:
+        @st.fragment(run_every="5s")
+        def _main_telemetry_poll() -> None:
+            _render_main_telemetry_charts()
 
-    # Row 1 — Speed + DRS background shading
-    fig.add_trace(
-        go.Scatter(
-            x=times, y=speeds,
-            mode="lines",
-            name="Vitesse",
-            line=dict(color=drv_colour, width=2),
-            fill="tozeroy",
-            fillcolor=_hex_to_rgba(drv_colour, 0.09),
-            hovertemplate="<b>%{y} km/h</b><br>%{x|%H:%M:%S}<extra></extra>",
-        ),
-        row=1, col=1,
-    )
-    # DRS actif en surimpression
-    fig.add_trace(
-        go.Scatter(
-            x=times, y=[s if d else None for s, d in zip(speeds, drs_vals)],
-            mode="lines",
-            name="DRS ouvert",
-            line=dict(color="#00FF88", width=3, dash="dot"),
-            hovertemplate="DRS actif — %{y} km/h<extra></extra>",
-        ),
-        row=1, col=1,
-    )
+        _main_telemetry_poll()
+    else:
+        if not _render_main_telemetry_charts():
+            return
 
-    # Row 2 — RPM
-    fig.add_trace(
-        go.Scatter(
-            x=times, y=rpms,
-            mode="lines",
-            name="RPM",
-            line=dict(color="#FF8000", width=1.5),
-            hovertemplate="<b>%{y:,} RPM</b><br>%{x|%H:%M:%S}<extra></extra>",
-        ),
-        row=2, col=1,
-    )
-
-    # Row 3 — Gear (stepped)
-    fig.add_trace(
-        go.Scatter(
-            x=times, y=gears,
-            mode="lines",
-            name="Rapport",
-            line=dict(color="#CCCCCC", width=2, shape="hv"),
-            hovertemplate="<b>Rapport %{y}</b><br>%{x|%H:%M:%S}<extra></extra>",
-        ),
-        row=3, col=1,
-    )
-
-    # Row 4 — Throttle + Brake
-    fig.add_trace(
-        go.Scatter(
-            x=times, y=throttles,
-            mode="lines",
-            name="Gaz",
-            line=dict(color="#00CC44", width=1.5),
-            fill="tozeroy",
-            fillcolor="rgba(0,204,68,0.12)",
-            hovertemplate="Gaz : <b>%{y}%%</b><extra></extra>",
-        ),
-        row=4, col=1,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=times, y=brakes,
-            mode="lines",
-            name="Frein",
-            line=dict(color="#E10600", width=1.5),
-            fill="tozeroy",
-            fillcolor="rgba(225,6,0,0.12)",
-            hovertemplate="Frein : <b>%{y}%%</b><extra></extra>",
-        ),
-        row=4, col=1,
-    )
-
-    # ── Layout global ─────────────────────────────────────────────────────────
-    fig.update_layout(
-        template="plotly_dark",
-        height=680,
-        margin=dict(l=10, r=10, t=60, b=10),
-        plot_bgcolor="rgba(0,0,0,0)",
-        paper_bgcolor="rgba(0,0,0,0)",
-        legend=dict(
-            orientation="h",
-            yanchor="bottom", y=1.01,
-            xanchor="right",  x=1,
-            font=dict(size=11),
-        ),
-        hoverlabel=dict(bgcolor="#1A1A1A", bordercolor=drv_colour, font_color="white"),
-        hovermode="x unified",
-    )
-    # Axes Y
-    fig.update_yaxes(row=1, gridcolor="rgba(255,255,255,0.06)", range=[0, 380])
-    fig.update_yaxes(row=2, gridcolor="rgba(255,255,255,0.06)", range=[0, 20000])
-    fig.update_yaxes(row=3, gridcolor="rgba(255,255,255,0.06)", range=[0, 9], dtick=1)
-    fig.update_yaxes(row=4, gridcolor="rgba(255,255,255,0.06)", range=[0, 105])
-    # Axes X (partagés)
-    for row in range(1, 5):
-        fig.update_xaxes(row=row, showgrid=False, tickfont=dict(color="#888"))
-
-    st.plotly_chart(fig, width="stretch")
+    # ── Flux MQTT temps réel (WebSocket backend → navigateur, sans polling) ──
+    if f1_api.fetch_live_mqtt_capable():
+        st.divider()
+        st.markdown("### ⚡ Flux MQTT — temps réel (OpenF1)")
+        st.caption(
+            "Données poussées par le broker OpenF1 (topic `v1/car_data`), sans rafraîchissement périodique. "
+            "En production, définissez `PUBLIC_API_BASE_URL` (ex. `https://votredomaine/api`) pour que le WebSocket "
+            "traverse Nginx (`/api/ws/`)."
+        )
+        ws_url = f1_api.websocket_telemetry_url(selected_session_key, selected_driver_number)
+        components.html(build_mqtt_live_embed(ws_url), height=540, scrolling=False)
 
     # ── Section Carte Circuit ─────────────────────────────────────────────────
     st.divider()
@@ -866,14 +897,19 @@ def _render_telemetry_page() -> None:
     with live_col_info:
         st.caption(
             "Graphe bi-axe vitesse/RPM · Jauge rapport · Badge pneu actuel. "
-            "Active le rafraîchissement pour simuler le direct (session en cours uniquement)."
+            "Rafraîchissement toutes les 5 s (recommandé pendant une session en cours). "
+            "Le grand graphique ci-dessus en mode « Temps réel » se met aussi à jour ~5 s."
         )
     with live_col_toggle:
-        live_enabled = st.toggle("⟳ Auto-refresh 5 s", value=False)
+        live_enabled = st.toggle(
+            "⟳ Auto-refresh 5 s",
+            value=not _session_ended,
+            help="Désactive en fin de session pour éviter des requêtes inutiles.",
+        )
 
     @st.fragment(run_every="5s" if live_enabled else None)
     def _live_fragment() -> None:
-        live_data = f1_api.fetch_live_telemetry(selected_session_key, selected_driver_number)
+        live_data = f1_api.fetch_telemetry_tail(selected_session_key, selected_driver_number, 100)
 
         if not live_data or not live_data.get("points"):
             st.info("Aucune donnée disponible pour cette session.", icon="ℹ️")
