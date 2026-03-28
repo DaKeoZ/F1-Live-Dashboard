@@ -92,7 +92,8 @@ function connect() {{
         setStatus('Erreur : ' + d.error, false);
         return;
       }}
-      push(d);
+      if (d.ch === 'car_data' && d.d) push(d.d);
+      else if (!d.ch) push(d);
     }} catch (e) {{}}
   }};
 }}

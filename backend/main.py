@@ -23,7 +23,7 @@ from models import (
     TelemetryResponse,
     TyreStrategyResponse,
 )
-from live_mqtt_bridge import CarDataMqttBridge
+from live_mqtt_bridge import TelemetrySessionMqttBridge
 from telemetry_service import (
     _get_openf1_bearer_token,
     get_all_tyre_stints,
@@ -201,11 +201,12 @@ def telemetry_live_capable():
 @app.websocket("/ws/telemetry/{session_key}/{driver_number}")
 async def websocket_telemetry_stream(session_key: int, driver_number: int, websocket: WebSocket):
     """
-    Relai temps réel : souscription MQTT OpenF1 (v1/car_data) filtrée → messages JSON vers le navigateur.
+    Relai temps réel : MQTT OpenF1 multiplexé (v1/car_data + v1/location + v1/stints) → JSON vers le navigateur.
+    Chaque message est un objet {"ch": "car_data"|"location"|"stint", "d": ...} (ou erreur).
     Le jeton OAuth2 ne quitte jamais le backend.
     """
     await websocket.accept()
-    bridge = CarDataMqttBridge(session_key, driver_number)
+    bridge = TelemetrySessionMqttBridge(session_key, driver_number)
     try:
         bridge.start()
     except Exception as exc:

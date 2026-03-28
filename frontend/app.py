@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -12,7 +13,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 import api as f1_api
-from mqtt_live_html import build_mqtt_live_embed
+from telemetry_tail_live_html import build_telemetry_tail_full_embed
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -431,6 +432,42 @@ def _render_telemetry_page() -> None:
             horizontal=True,
         )
 
+    use_mqtt_tail = mode == "tail" and f1_api.fetch_live_mqtt_capable()
+    if use_mqtt_tail:
+        st.info(
+            "Mode **Temps réel MQTT** : les graphiques, la carte, les pneus et la vue Live ci-dessous "
+            "sont alimentés par le flux WebSocket (topics `v1/car_data`, `v1/location`, `v1/stints`). "
+            "Le contour du circuit est chargé une fois via l’API REST."
+        )
+        drivers_payload = [
+            {
+                "driver_number": int(d["driver_number"]),
+                "name_acronym": (d.get("name_acronym") or "")[:8],
+                "team_name": (d.get("team_name") or "")[:48],
+                "team_colour": (
+                    f"#{d['team_colour'].lstrip('#')}" if d.get("team_colour") else "#E10600"
+                ),
+            }
+            for d in drivers
+        ]
+        path_json = "null"
+        path_data = f1_api.fetch_car_path(selected_session_key, selected_driver_number, sample_size=600)
+        if path_data and path_data.get("path"):
+            path_json = json.dumps([[p["x"], p["y"]] for p in path_data["path"]])
+        ws_url = f1_api.websocket_telemetry_url(selected_session_key, selected_driver_number)
+        components.html(
+            build_telemetry_tail_full_embed(
+                ws_url,
+                json.dumps(drivers_payload),
+                drv_colour,
+                selected_driver_number,
+                path_json,
+            ),
+            height=2900,
+            scrolling=True,
+        )
+        return
+
     # ── Fetch & graphique principal ───────────────────────────────────────────
     if st.button("⚡ Charger la télémétrie", type="primary", width="stretch"):
         # Invalider uniquement les caches de télémétrie et stints (pas le tracé circuit)
@@ -613,18 +650,6 @@ def _render_telemetry_page() -> None:
     else:
         if not _render_main_telemetry_charts():
             return
-
-    # ── Flux MQTT temps réel (WebSocket backend → navigateur, sans polling) ──
-    if f1_api.fetch_live_mqtt_capable():
-        st.divider()
-        st.markdown("### ⚡ Flux MQTT — temps réel (OpenF1)")
-        st.caption(
-            "Données poussées par le broker OpenF1 (topic `v1/car_data`), sans rafraîchissement périodique. "
-            "En production, définissez `PUBLIC_API_BASE_URL` (ex. `https://votredomaine/api`) pour que le WebSocket "
-            "traverse Nginx (`/api/ws/`)."
-        )
-        ws_url = f1_api.websocket_telemetry_url(selected_session_key, selected_driver_number)
-        components.html(build_mqtt_live_embed(ws_url), height=540, scrolling=False)
 
     # ── Section Carte Circuit ─────────────────────────────────────────────────
     st.divider()
