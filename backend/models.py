@@ -155,6 +155,7 @@ class RaceResultEntry(BaseModel):
 
     position: int
     driver_code: str | None = Field(None, description="Code 3 lettres du pilote")
+    driver_nationality: str | None = Field(None, description="Nationalité du pilote (ex: 'Dutch')")
     driver_name: str
     constructor_name: str
     grid: int = Field(..., description="Position de départ")

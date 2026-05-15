@@ -286,6 +286,7 @@ def _parse_result_entry(raw: dict) -> RaceResultEntry:
     return RaceResultEntry(
         position=int(raw["position"]),
         driver_code=driver.get("code"),
+        driver_nationality=driver.get("nationality"),
         driver_name=f"{driver['givenName']} {driver['familyName']}",
         constructor_name=constructor["name"],
         grid=int(raw.get("grid", 0)),

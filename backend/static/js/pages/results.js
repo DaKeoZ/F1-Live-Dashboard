@@ -4,6 +4,18 @@
 
 import { fetchRaceSchedule, fetchRaceResults } from '../api.js';
 
+const COUNTRY_FLAGS = {
+  british: '🇬🇧', dutch: '🇳🇱', monégasque: '🇲🇨', spanish: '🇪🇸', german: '🇩🇪',
+  australian: '🇦🇺', mexican: '🇲🇽', canadian: '🇨🇦', french: '🇫🇷', finnish: '🇫🇮',
+  chinese: '🇨🇳', american: '🇺🇸', danish: '🇩🇰', thai: '🇹🇭', japanese: '🇯🇵',
+  new_zealander: '🇳🇿', italian: '🇮🇹', austrian: '🇦🇹', argentinian: '🇦🇷',
+  swiss: '🇨🇭', swedish: '🇸🇪', polish: '🇵🇱', brazilian: '🇧🇷',
+};
+
+function flag(nat) {
+  return COUNTRY_FLAGS[(nat || '').toLowerCase().replace(/\s/g, '_')] || '';
+}
+
 const TEAM_COLORS = {
   'mercedes':     '#00D2BE', 'ferrari':        '#DC0000', 'red bull':     '#3671C6',
   'mclaren':      '#FF8000', 'aston martin':   '#358C75', 'alpine':       '#0093CC',
@@ -31,7 +43,7 @@ function podCard(p, cls) {
   return `
     <div class="podium-card ${cls}">
       <div class="podium-pos">P${p.position}</div>
-      <div class="podium-code">${p.driver_code || p.driver_name?.split(' ').pop() || '—'}</div>
+      <div class="podium-code">${flag(p.driver_nationality)}${p.driver_code || p.driver_name?.split(' ').pop() || '—'}</div>
       <div class="podium-name">${p.driver_name || '—'}</div>
       <div class="podium-team">${p.constructor_name || '—'}</div>
       <div class="podium-time">${p.time_or_status || '—'}</div>
@@ -60,7 +72,7 @@ function renderResults(race) {
       <tr>
         <td><span class="pos-num ${posClass}">${r.position}</span></td>
         <td>
-          <div class="driver-code">${r.driver_code || r.driver_name?.split(' ').pop() || '—'}</div>
+          <div class="driver-code">${flag(r.driver_nationality)}${r.driver_code || r.driver_name?.split(' ').pop() || '—'}</div>
           <div class="driver-name">${r.driver_name || '—'}</div>
         </td>
         <td style="color:${color};font-size:12px">${r.constructor_name}</td>
