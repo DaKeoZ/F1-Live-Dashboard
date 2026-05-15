@@ -3,7 +3,16 @@
  * Normalise correctement les coordonnées OpenF1 en préservant le ratio d'aspect.
  * Y est inversé (canvas Y↓, OpenF1 Y↑).
  */
-import { CIRCUIT_TURN_COUNTS } from '../data/circuit_turns.js';
+
+// Chargement du référentiel de virages — import dynamique pour ne pas bloquer
+// le graphe de modules si le fichier est absent (graceful degradation)
+let CIRCUIT_TURN_COUNTS = {};
+try {
+  const mod = await import('../data/circuit_turns.js');
+  CIRCUIT_TURN_COUNTS = mod.CIRCUIT_TURN_COUNTS ?? {};
+} catch {
+  // Sans données : la détection tourne sans contrainte de comptage officiel
+}
 
 export class CircuitRenderer {
   constructor(canvas) {
