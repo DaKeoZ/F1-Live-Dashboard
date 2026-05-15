@@ -6,29 +6,15 @@ services:
     ports:
       - "9797:9797"
     environment:
-      # OpenF1 (télémétrie live) : https://openf1.org/auth.html
-      # Définir dans un fichier .env à la racine ou exporter dans le shell.
-      OPENF1_USERNAME: ${OPENF1_USERNAME:-}
-      OPENF1_PASSWORD: ${OPENF1_PASSWORD:-}
+      OPENF1_USERNAME:     ${OPENF1_USERNAME:-}
+      OPENF1_PASSWORD:     ${OPENF1_PASSWORD:-}
       OPENF1_ACCESS_TOKEN: ${OPENF1_ACCESS_TOKEN:-}
+      DATA_DIR:            /app/data
+    volumes:
+      - ./data:/app/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9797/')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9797/api/status')"]
       interval: 30s
       timeout: 10s
       retries: 3
-
-  frontend:
-    build:
-      context: .                      # racine nécessaire pour copier .streamlit/
-      dockerfile: frontend/Dockerfile
-    ports:
-      - "9798:9798"
-    environment:
-      - API_BASE_URL=http://backend:9797   # réseau Docker interne
-      # URL publique du backend pour WebSocket MQTT (navigateur). Ex. http://localhost:9797 ou https://domaine/api
-      - PUBLIC_API_BASE_URL=${PUBLIC_API_BASE_URL:-}
-    depends_on:
-      backend:
-        condition: service_healthy
-    restart: unless-stopped

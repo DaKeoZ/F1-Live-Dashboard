@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 
+import database as db
 from models import (
     AllDriversPositionResponse,
     AllTyreStrategiesResponse,
@@ -266,40 +267,37 @@ def get_telemetry(
     sample_size: int = 100,
     mode: str = "uniform",
 ) -> TelemetryResponse:
-    """
-    Retourne les données de télémétrie échantillonnées pour un pilote donné.
-
-    Args:
-        session_key:   Clé de session OpenF1 (ex: 11234 pour Melbourne 2026).
-        driver_number: Numéro de voiture du pilote.
-        sample_size:   Nombre de points à retourner (10–500).
-        mode:          "uniform" — points répartis sur toute la session.
-                       "tail"    — N derniers points (mode live).
-
-    Returns:
-        TelemetryResponse avec métadonnées de sampling et liste de TelemetryPoint.
-
-    Raises:
-        httpx.HTTPStatusError: Erreur HTTP depuis OpenF1.
-        ValueError:            Réponse API non conforme ou mode invalide.
-    """
     if mode not in ("uniform", "tail"):
         raise ValueError(f"Mode inconnu : '{mode}'. Choisir 'uniform' ou 'tail'.")
 
-    # OpenF1 peut renvoyer 404 "No results found." si aucune donnée n'existe
-    # (ex: session future, session sans car_data publié, etc.)
-    raw_data = _openf1_get(
-        f"{OPENF1_BASE}/car_data",
-        params={"session_key": session_key, "driver_number": driver_number},
-        timeout=TIMEOUT_LARGE,
-        empty_on_404=True,
-    )
-
-    if not isinstance(raw_data, list):
-        raise ValueError(
-            f"Réponse inattendue de l'API OpenF1 (type={type(raw_data).__name__}). "
-            "Vérifiez session_key et driver_number."
+    # Mode tail = lecture live, jamais depuis le cache
+    if mode == "uniform" and db.is_telemetry_cached(session_key, driver_number):
+        raw_data = db.get_telemetry_raw(session_key, driver_number)
+        # Reconvertir le format SQLite vers le format attendu par _parse_point
+        raw_data = [{"date": r["timestamp"], **r} for r in raw_data]
+    else:
+        raw_data = _openf1_get(
+            f"{OPENF1_BASE}/car_data",
+            params={"session_key": session_key, "driver_number": driver_number},
+            timeout=TIMEOUT_LARGE,
+            empty_on_404=True,
         )
+        if not isinstance(raw_data, list):
+            raise ValueError(
+                f"Réponse inattendue de l'API OpenF1 (type={type(raw_data).__name__}). "
+                "Vérifiez session_key et driver_number."
+            )
+        # Mise en cache pour les sessions terminées (dernier point > 2h)
+        if mode == "uniform" and raw_data:
+            try:
+                last_ts_str = str(raw_data[-1].get("date", "")).replace("Z", "+00:00")
+                last_ts = datetime.fromisoformat(last_ts_str)
+                if last_ts.tzinfo is None:
+                    last_ts = last_ts.replace(tzinfo=timezone.utc)
+                if last_ts < datetime.now(timezone.utc) - timedelta(hours=2):
+                    db.save_telemetry(session_key, driver_number, raw_data)
+            except Exception:
+                pass
 
     total = len(raw_data)
 
@@ -419,25 +417,68 @@ def get_tyre_stints(session_key: int, driver_number: int) -> TyreStrategyRespons
 
 
 def get_all_tyre_stints(session_key: int) -> AllTyreStrategiesResponse:
-    """
-    Retourne la stratégie pneumatiques de TOUS les pilotes d'une session en un seul appel API.
-    Utile pour le Gantt de stratégie multi-pilotes.
+    if db.is_stints_cached(session_key):
+        cached = db.get_stints_cached(session_key)
+        by_driver: dict[int, list[dict]] = {}
+        for s in cached:
+            by_driver.setdefault(s["driver_number"], []).append(s)
+        strategies = [
+            TyreStrategyResponse(
+                session_key=session_key,
+                driver_number=dn,
+                total_stints=len(stints),
+                stints=sorted(
+                    [TyreStint(
+                        stint_number=s["stint_number"],
+                        lap_start=s["lap_start"],
+                        lap_end=s["lap_end"],
+                        compound=s["compound"],
+                        tyre_age_at_start=s["tyre_age_at_start"],
+                        laps_in_stint=(s["lap_end"] - s["lap_start"] + 1) if s["lap_end"] else None,
+                        compound_color=s["compound_color"],
+                        compound_text_color=s["compound_text_color"],
+                    ) for s in stints],
+                    key=lambda s: s.stint_number,
+                ),
+            )
+            for dn, stints in sorted(by_driver.items())
+        ]
+        return AllTyreStrategiesResponse(
+            session_key=session_key,
+            total_drivers=len(strategies),
+            strategies=strategies,
+        )
 
-    Args:
-        session_key: Clé de session OpenF1.
-
-    Returns:
-        AllTyreStrategiesResponse contenant la stratégie de chaque pilote.
-    """
     raw = _get(f"{OPENF1_BASE}/stints", params={"session_key": session_key})
     if not isinstance(raw, list):
         raise ValueError(f"Réponse inattendue de l'API OpenF1 stints : {type(raw).__name__}")
 
-    # Regrouper par pilote
-    by_driver: dict[int, list[dict]] = {}
+    # Mise en cache si les données semblent terminées
+    try:
+        db.save_stints(session_key, [
+            {
+                "driver_number": s["driver_number"],
+                "stint_number": s.get("stint_number") or 1,
+                "lap_start": s.get("lap_start") or 1,
+                "lap_end": s.get("lap_end"),
+                "compound": s.get("compound"),
+                "tyre_age_at_start": s.get("tyre_age_at_start") or 0,
+                "compound_color": COMPOUND_COLORS.get(
+                    (s.get("compound") or "UNKNOWN").strip().upper(), COMPOUND_COLORS["UNKNOWN"]
+                ),
+                "compound_text_color": COMPOUND_TEXT_COLORS.get(
+                    (s.get("compound") or "UNKNOWN").strip().upper(), COMPOUND_TEXT_COLORS["UNKNOWN"]
+                ),
+            }
+            for s in raw
+        ])
+    except Exception:
+        pass
+
+    by_driver_raw: dict[int, list[dict]] = {}
     for entry in raw:
         dn = int(entry["driver_number"])
-        by_driver.setdefault(dn, []).append(entry)
+        by_driver_raw.setdefault(dn, []).append(entry)
 
     strategies = [
         TyreStrategyResponse(
@@ -446,7 +487,7 @@ def get_all_tyre_stints(session_key: int) -> AllTyreStrategiesResponse:
             total_stints=len(stints_raw),
             stints=sorted([_parse_stint(s) for s in stints_raw], key=lambda s: s.stint_number),
         )
-        for dn, stints_raw in sorted(by_driver.items())
+        for dn, stints_raw in sorted(by_driver_raw.items())
     ]
 
     return AllTyreStrategiesResponse(
@@ -604,25 +645,28 @@ def get_last_positions(session_key: int) -> AllDriversPositionResponse:
 def get_car_path(
     session_key: int,
     driver_number: int,
-    sample_size: int = 500,
+    sample_size: int = 800,
 ) -> CarPathResponse:
     """
-    Retourne le tracé GPS CONSÉCUTIF d'un pilote pour dessiner le contour du circuit.
-
-    Stratégie anti-429 : au lieu de charger les 32 000+ points de la session entière,
-    on utilise un filtre de DATE pour ne récupérer que les 12 premières minutes
-    de la session (tour de formation + 1-2 tours de course ≈ 400 points max).
-
-    On saute ensuite les 35 % du début (tour de formation) pour ne conserver que
-    des points correspondant à des tours de course propres.
+    Retourne le tracé GPS d'un pilote pour dessiner le contour du circuit.
+    Le résultat est mis en cache SQLite (tracé immuable pour une session donnée).
     """
-    # Récupérer l'heure de début de session pour construire la fenêtre temporelle
+    if db.is_car_path_cached(session_key, driver_number):
+        cached = db.get_car_path_cached(session_key, driver_number)
+        path = _uniform_sample(cached, sample_size)
+        return CarPathResponse(
+            session_key=session_key,
+            driver_number=driver_number,
+            total_raw_points=len(cached),
+            sample_size=len(path),
+            path=[CarPathPoint(x=p["x"], y=p["y"], z=p["z"]) for p in path],
+        )
+
     session_info = _get_session_info(session_key)
     date_start_str = session_info.get("date_start", "")
     date_start = datetime.fromisoformat(date_start_str.replace("Z", "+00:00"))
-    # Travailler en UTC naïf pour correspondre au format attendu par OpenF1
     window_start = date_start.replace(tzinfo=None)
-    window_end   = window_start + timedelta(minutes=12)
+    window_end   = window_start + timedelta(minutes=15)
 
     raw = _get(
         f"{OPENF1_BASE}/location",
@@ -632,31 +676,30 @@ def get_car_path(
             "date>":         window_start.strftime("%Y-%m-%dT%H:%M:%S"),
             "date<":         window_end.strftime("%Y-%m-%dT%H:%M:%S"),
         },
-        timeout=TIMEOUT_SMALL,   # Données légères — timeout court suffisant
+        timeout=TIMEOUT_SMALL,
     )
 
     if not isinstance(raw, list) or not raw:
         raise ValueError(
-            f"Aucune donnée GPS dans les 12 premières minutes pour "
+            f"Aucune donnée GPS dans les 15 premières minutes pour "
             f"session_key={session_key}, driver={driver_number}."
         )
 
     total = len(raw)
 
-    # Sauter le tour de formation (~35 % du début de la fenêtre ≈ 4 min)
+    # Sauter le tour de formation (~35 % du début ≈ 5 min)
     skip   = min(int(total * 0.35), max(0, total - sample_size))
     window = raw[skip: skip + sample_size]
     if len(window) < min(50, sample_size // 4):
         window = raw[:sample_size]
 
-    path = [
-        CarPathPoint(
-            x=float(pt["x"]),
-            y=float(pt["y"]),
-            z=float(pt.get("z") or 0),
-        )
-        for pt in window
-    ]
+    # Mise en cache systématique (le tracé ne change pas)
+    try:
+        db.save_car_path(session_key, driver_number, window)
+    except Exception:
+        pass
+
+    path = [CarPathPoint(x=float(pt["x"]), y=float(pt["y"]), z=float(pt.get("z") or 0)) for pt in window]
 
     return CarPathResponse(
         session_key=session_key,

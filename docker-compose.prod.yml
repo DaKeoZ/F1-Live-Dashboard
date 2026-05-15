@@ -1,32 +1,25 @@
-# Production — images ghcr.io
+# Production — image ghcr.io
 # Usage : GHCR_OWNER=dakeoz docker compose -f docker-compose.prod.yml up -d
-# Ou : créer un fichier .env avec GHCR_OWNER=dakeoz  (MINUSCULES obligatoires)
 
 services:
 
   backend:
     image: ghcr.io/${GHCR_OWNER}/f1-dashboard-backend:latest
     ports:
-      - "127.0.0.1:9797:9797"   # exposé uniquement en local → Nginx proxie
+      - "127.0.0.1:9797:9797"   # Nginx proxie
     environment:
-      OPENF1_USERNAME: ${OPENF1_USERNAME:-}
-      OPENF1_PASSWORD: ${OPENF1_PASSWORD:-}
+      OPENF1_USERNAME:     ${OPENF1_USERNAME:-}
+      OPENF1_PASSWORD:     ${OPENF1_PASSWORD:-}
       OPENF1_ACCESS_TOKEN: ${OPENF1_ACCESS_TOKEN:-}
+      DATA_DIR:            /app/data
+    volumes:
+      - f1_data:/app/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9797/')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9797/api/status')"]
       interval: 30s
       timeout: 10s
       retries: 3
 
-  frontend:
-    image: ghcr.io/${GHCR_OWNER}/f1-dashboard-frontend:latest
-    ports:
-      - "127.0.0.1:9798:9798"   # exposé uniquement en local → Nginx proxie
-    environment:
-      - API_BASE_URL=http://backend:9797
-      - PUBLIC_API_BASE_URL=${PUBLIC_API_BASE_URL:-}
-    depends_on:
-      backend:
-        condition: service_healthy
-    restart: unless-stopped
+volumes:
+  f1_data:

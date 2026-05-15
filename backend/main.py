@@ -1,15 +1,19 @@
 """
 F1 Live Dashboard — Backend API
-Point d'entrée FastAPI.
+Point d'entrée FastAPI. Sert aussi la SPA frontend via StaticFiles.
 """
 
 import asyncio
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import httpx
 
 from api_client import get_constructor_standings, get_driver_standings, get_last_race_results, get_next_race
+from database import init_db
 from models import (
     AllDriversPositionResponse,
     AllTyreStrategiesResponse,
@@ -35,10 +39,20 @@ from telemetry_service import (
     get_tyre_stints,
 )
 
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
+
+
 app = FastAPI(
     title="F1 Live Dashboard API",
     description="API backend pour le F1 Live Dashboard — données pilotes, équipes et courses.",
-    version="0.3.0",
+    version="0.4.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -55,7 +69,6 @@ _SEASON_QUERY = Query(
 
 
 def _handle_httpx_errors(exc: Exception) -> None:
-    """Convertit les erreurs httpx en HTTPException FastAPI."""
     if isinstance(exc, httpx.HTTPStatusError):
         raise HTTPException(
             status_code=exc.response.status_code,
@@ -67,17 +80,13 @@ def _handle_httpx_errors(exc: Exception) -> None:
     ) from exc
 
 
-@app.get("/")
-def root():
-    return {"message": "F1 Live Dashboard API", "version": "0.2.0", "docs": "/docs"}
+@app.get("/api/status")
+def api_status():
+    return {"message": "F1 Live Dashboard API", "version": "0.4.0", "docs": "/docs"}
 
 
 @app.get("/standings/drivers", response_model=DriverStandingsResponse)
 def driver_standings(season: str = _SEASON_QUERY):
-    """
-    Classement des pilotes pour une saison donnée.
-    Données validées et structurées via Pydantic.
-    """
     try:
         return get_driver_standings(season=season)
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
@@ -86,10 +95,6 @@ def driver_standings(season: str = _SEASON_QUERY):
 
 @app.get("/standings/constructors", response_model=ConstructorStandingsResponse)
 def constructor_standings(season: str = _SEASON_QUERY):
-    """
-    Classement des constructeurs pour une saison donnée.
-    Données validées et structurées via Pydantic.
-    """
     try:
         return get_constructor_standings(season=season)
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
@@ -100,17 +105,6 @@ def constructor_standings(season: str = _SEASON_QUERY):
 
 @app.get("/location/{session_key}", response_model=AllDriversPositionResponse)
 def last_positions(session_key: int):
-    """
-    Retourne la dernière position GPS connue de tous les pilotes d'une session.
-
-    Les coordonnées x, y sont dans le référentiel du circuit (unités arbitraires OpenF1).
-    La coordonnée z représente l'altitude normalisée.
-
-    Stratégie d'acquisition :
-    - Fenêtre temporelle = 60 % de la durée de session (évite de charger la totalité des données).
-    - Requêtes concurrentes (max 3 workers) avec 3 passes de retry pour contourner le rate-limiting.
-    - Cache côté client recommandé : 60 s (données quasi-statiques pour une session terminée).
-    """
     try:
         return get_last_positions(session_key=session_key)
     except ValueError as exc:
@@ -123,17 +117,8 @@ def last_positions(session_key: int):
 def car_path(
     session_key: int,
     driver_number: int,
-    sample_size: int = Query(
-        default=500,
-        ge=50,
-        le=2000,
-        description="Nombre de points du tracé retournés (pour dessiner le contour du circuit).",
-    ),
+    sample_size: int = Query(default=800, ge=50, le=2000),
 ):
-    """
-    Retourne le tracé GPS sous-échantillonné d'un pilote sur l'ensemble de la session.
-    Utile pour dessiner le contour du circuit en fond de la carte de positions.
-    """
     try:
         return get_car_path(session_key=session_key, driver_number=driver_number, sample_size=sample_size)
     except ValueError as exc:
@@ -146,12 +131,6 @@ def car_path(
 
 @app.get("/tyres/{session_key}/{driver_number}", response_model=TyreStrategyResponse)
 def tyre_strategy_single(session_key: int, driver_number: int):
-    """
-    Retourne la stratégie pneumatiques d'un pilote pour une session OpenF1.
-
-    Chaque stint contient : compound, couleur officielle, tour de départ/fin,
-    âge des pneus au départ et nombre de tours effectués.
-    """
     try:
         return get_tyre_stints(session_key=session_key, driver_number=driver_number)
     except ValueError as exc:
@@ -162,10 +141,6 @@ def tyre_strategy_single(session_key: int, driver_number: int):
 
 @app.get("/tyres/{session_key}", response_model=AllTyreStrategiesResponse)
 def tyre_strategy_all(session_key: int):
-    """
-    Retourne la stratégie pneumatiques de TOUS les pilotes d'une session en un seul appel API.
-    Conçu pour alimenter le Gantt de stratégie multi-pilotes.
-    """
     try:
         return get_all_tyre_stints(session_key=session_key)
     except ValueError as exc:
@@ -176,10 +151,6 @@ def tyre_strategy_all(session_key: int):
 
 @app.get("/race/last", response_model=LastRaceResponse)
 def last_race_results():
-    """
-    Retourne les résultats complets de la dernière course disputée.
-    Inclut le classement complet, les temps, statuts et meilleurs tours.
-    """
     try:
         result = get_last_race_results()
         if result is None:
@@ -191,20 +162,13 @@ def last_race_results():
 
 # ── Télémétrie OpenF1 ─────────────────────────────────────────────────────────
 
-
 @app.get("/telemetry/live-capable")
 def telemetry_live_capable():
-    """Indique si un jeton OpenF1 est disponible (MQTT / REST authentifiés)."""
     return {"live_mqtt": bool(_get_openf1_bearer_token())}
 
 
 @app.websocket("/ws/telemetry/{session_key}/{driver_number}")
 async def websocket_telemetry_stream(session_key: int, driver_number: int, websocket: WebSocket):
-    """
-    Relai temps réel : MQTT OpenF1 multiplexé (v1/car_data + v1/location + v1/stints) → JSON vers le navigateur.
-    Chaque message est un objet {"ch": "car_data"|"location"|"stint", "d": ...} (ou erreur).
-    Le jeton OAuth2 ne quitte jamais le backend.
-    """
     await websocket.accept()
     bridge = TelemetrySessionMqttBridge(session_key, driver_number)
     try:
@@ -230,14 +194,10 @@ async def websocket_telemetry_stream(session_key: int, driver_number: int, webso
 
 @app.get("/telemetry/sessions", response_model=list[OpenF1Session])
 def telemetry_sessions(
-    year: int | None = Query(default=None, description="Filtrer par année (ex: 2026)"),
-    session_type: str | None = Query(default=None, description="Type de session OpenF1 (None = toutes)"),
+    year: int | None = Query(default=None),
+    session_type: str | None = Query(default=None),
     limit: int = Query(default=150, ge=1, le=500),
 ):
-    """
-    Liste les sessions OpenF1 disponibles, triées de la plus récente à la plus ancienne.
-    Utilisé pour alimenter le sélecteur de session dans l'interface.
-    """
     try:
         return get_openf1_sessions(year=year, session_type=session_type, limit=limit)
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
@@ -246,16 +206,10 @@ def telemetry_sessions(
 
 @app.get("/telemetry/drivers/{session_key}", response_model=list[OpenF1Driver])
 def telemetry_drivers(session_key: int):
-    """
-    Retourne la liste des pilotes dans une session OpenF1 (triés par numéro de voiture).
-    """
     try:
         drivers = get_openf1_drivers(session_key)
         if not drivers:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Aucun pilote trouvé pour session_key={session_key}.",
-            )
+            raise HTTPException(status_code=404, detail=f"Aucun pilote trouvé pour session_key={session_key}.")
         return drivers
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         _handle_httpx_errors(exc)
@@ -265,28 +219,9 @@ def telemetry_drivers(session_key: int):
 def telemetry(
     session_key: int,
     driver_number: int,
-    sample_size: int = Query(
-        default=200,
-        ge=10,
-        le=2000,
-        description="Nombre de points retournés après échantillonnage.",
-    ),
-    mode: str = Query(
-        default="uniform",
-        description=(
-            "Stratégie d'échantillonnage :\n"
-            "  'uniform' — points équidistants sur toute la session (race overview).\n"
-            "  'tail'    — N derniers points chronologiques (lecture live)."
-        ),
-    ),
+    sample_size: int = Query(default=500, ge=10, le=2000),
+    mode: str = Query(default="uniform"),
 ):
-    """
-    Retourne les données de télémétrie voiture (speed, rpm, n_gear, throttle, brake, drs)
-    pour un pilote donné sur une session OpenF1, sous-échantillonnées pour la visualisation.
-
-    Les données brutes d'OpenF1 peuvent dépasser 30 000 points par session (≈ 3.7 Hz).
-    Le paramètre `sample_size` contrôle le nombre de points retournés (défaut : 100).
-    """
     try:
         return get_telemetry(
             session_key=session_key,
@@ -302,12 +237,6 @@ def telemetry(
 
 @app.get("/race/next", response_model=NextRaceResponse)
 def next_race():
-    """
-    Retourne la prochaine course de la saison en cours avec :
-    - Nom du Grand Prix, circuit et localisation
-    - Horaires UTC de la qualification et de la course (+ sprint si applicable)
-    - Compte à rebours (jours / heures / minutes) vers la session imminente
-    """
     try:
         result = get_next_race()
         if result is None:
@@ -315,3 +244,8 @@ def next_race():
         return result
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         _handle_httpx_errors(exc)
+
+
+# ── SPA Frontend (doit être monté en dernier) ─────────────────────────────────
+if STATIC_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
