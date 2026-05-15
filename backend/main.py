@@ -207,10 +207,7 @@ def telemetry_sessions(
 @app.get("/telemetry/drivers/{session_key}", response_model=list[OpenF1Driver])
 def telemetry_drivers(session_key: int):
     try:
-        drivers = get_openf1_drivers(session_key)
-        if not drivers:
-            raise HTTPException(status_code=404, detail=f"Aucun pilote trouvé pour session_key={session_key}.")
-        return drivers
+        return get_openf1_drivers(session_key)  # liste vide si aucun pilote
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         _handle_httpx_errors(exc)
 

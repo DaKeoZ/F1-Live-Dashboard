@@ -180,8 +180,12 @@ export async function renderTelemetry(container) {
     driverSel.innerHTML = '<option value="">Chargement…</option>';
     try {
       const drivers = await fetchDrivers(sessionKey);
-      driverSel.innerHTML = '<option value="">— Choisir —</option>';
       driverMap = {};
+      if (!drivers.length) {
+        driverSel.innerHTML = '<option value="">Pas de données pilotes</option>';
+        return;
+      }
+      driverSel.innerHTML = '<option value="">— Choisir —</option>';
       drivers.forEach(d => {
         driverMap[d.driver_number] = d;
         const opt = document.createElement('option');
@@ -189,8 +193,8 @@ export async function renderTelemetry(container) {
         opt.textContent = `${d.name_acronym} — ${d.full_name}`;
         driverSel.appendChild(opt);
       });
-    } catch {
-      driverSel.innerHTML = '<option value="">Erreur</option>';
+    } catch (e) {
+      driverSel.innerHTML = `<option value="">Erreur OpenF1</option>`;
     }
   }
 
