@@ -1,15 +1,17 @@
 # F1 Live Dashboard
 
-Dashboard F1 full-stack en temps réel : classements pilotes & constructeurs, calendrier complet avec essais libres, résultats de courses, télémétrie voiture, vue live avec jauge de rapport, stratégie pneumatiques et suivi de position GPS sur circuit.
+Dashboard F1 full-stack en temps réel : classements pilotes & constructeurs, résultats de toutes les courses de la saison, calendrier avec compte à rebours, télémétrie voiture, stratégie pneumatiques et suivi de position GPS sur le tracé du circuit — avec numéros de virages officiels.
 
 ## Stack technique
 
-| Couche      | Technologie                                      |
-|-------------|--------------------------------------------------|
-| Backend     | Python · FastAPI · httpx · Pydantic              |
-| Frontend    | Streamlit · Plotly · Pandas                      |
-| API F1      | Jolpica (Ergast MRE) + OpenF1                    |
-| Infra       | Docker · Docker Compose · GitHub Actions · Nginx |
+| Couche      | Technologie                                             |
+|-------------|---------------------------------------------------------|
+| Backend     | Python · FastAPI · httpx · Pydantic · SQLite (cache)    |
+| Frontend    | SPA vanilla JS (ES modules) · Chart.js v4 · Canvas 2D  |
+| API F1      | Jolpica (Ergast MRE) + OpenF1                           |
+| Infra       | Docker · Docker Compose · GitHub Actions · Nginx        |
+
+> Le frontend est une SPA (Single Page Application) HTML/CSS/JS servie directement par FastAPI via `StaticFiles`. Il n'y a pas de framework JS ni de serveur frontend séparé.
 
 ---
 
@@ -18,28 +20,38 @@ Dashboard F1 full-stack en temps réel : classements pilotes & constructeurs, ca
 ```
 F1-Live-Dashboard/
 ├── backend/
-│   ├── main.py              # Application FastAPI — tous les endpoints
+│   ├── main.py              # Application FastAPI — tous les endpoints + montage SPA
 │   ├── api_client.py        # Client HTTP → Jolpica (classements, calendrier, résultats)
 │   ├── telemetry_service.py # Client HTTP → OpenF1 (télémétrie, stints, positions GPS)
+│   ├── live_mqtt_bridge.py  # Bridge MQTT → WebSocket pour sessions en direct
 │   ├── models.py            # Modèles Pydantic (validation & contrats d'API)
+│   ├── database.py          # Cache SQLite (télémétrie, tracé circuit, stints)
+│   ├── static/
+│   │   ├── index.html       # Shell SPA (sidebar + pageContainer)
+│   │   ├── css/
+│   │   │   └── style.css    # Thème sombre F1
+│   │   └── js/
+│   │       ├── app.js       # Routeur hash-based + navigation
+│   │       ├── api.js       # Fetch wrappers + WebSocket manager
+│   │       ├── pages/
+│   │       │   ├── standings.js  # Pilotes & Constructeurs (podium, KPIs, tableau)
+│   │       │   ├── results.js    # Résultats de courses (sélecteur + podium + tableau)
+│   │       │   └── telemetry.js  # Télémétrie, circuit, stints
+│   │       ├── components/
+│   │       │   ├── circuit.js    # Canvas 2D — tracé circuit + numéros de virages
+│   │       │   └── charts.js     # Chart.js wrappers
+│   │       └── data/
+│   │           └── circuit_turns.js  # Comptages officiels de virages (calendrier 2025)
 │   ├── Dockerfile
-│   └── requirements.txt     # Dépendances backend uniquement
-├── frontend/
-│   ├── app.py               # Application Streamlit (dashboard principal)
-│   ├── api.py               # Fonctions d'appel au backend FastAPI (avec cache)
-│   ├── Dockerfile
-│   └── requirements.txt     # Dépendances frontend uniquement
+│   └── requirements.txt
+├── data/                    # Volume Docker — base SQLite persistante
 ├── nginx/
-│   └── nginx.conf           # Reverse proxy (HTTPS + WebSocket Streamlit)
+│   └── nginx.conf           # Reverse proxy (HTTPS + WebSocket)
 ├── .github/
 │   └── workflows/
 │       └── docker-publish.yml  # CI/CD → build & push images sur ghcr.io
-├── .streamlit/
-│   └── config.toml          # Thème sombre F1 (couleurs, font)
 ├── docker-compose.yml       # Build local
 ├── docker-compose.prod.yml  # Déploiement VPS (images ghcr.io)
-├── .dockerignore
-├── requirements.txt         # Toutes les dépendances (dev local)
 └── README.md
 ```
 
@@ -54,26 +66,20 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows PowerShell
 # source .venv/bin/activate     # Linux / macOS
 
-pip install -r requirements.txt
+pip install -r backend/requirements.txt
 ```
 
-### Terminal 1 — Backend FastAPI
+### Lancer le serveur
 
 ```bash
 cd backend
 uvicorn main:app --reload --port 9797
 ```
 
-Serveur sur **http://localhost:9797** · Swagger : **http://localhost:9797/docs**
+- Dashboard → **http://localhost:9797**
+- Swagger API → **http://localhost:9797/docs**
 
-### Terminal 2 — Frontend Streamlit
-
-```bash
-cd frontend
-streamlit run app.py --server.port 9798
-```
-
-Dashboard sur **http://localhost:9798**
+Le frontend SPA est servi automatiquement par FastAPI depuis `backend/static/`.
 
 ---
 
@@ -85,19 +91,18 @@ Dashboard sur **http://localhost:9798**
 docker compose up --build
 ```
 
-- Backend  → **http://localhost:9797**
-- Frontend → **http://localhost:9798**
+Dashboard sur **http://localhost:9797**
 
 ### Production (VPS via ghcr.io)
 
-Chaque `git push main` déclenche GitHub Actions qui build et publie les images sur `ghcr.io`.
+Chaque `git push main` déclenche GitHub Actions qui build et publie l'image sur `ghcr.io`.
 
 **Sur le VPS :**
 
 ```bash
 mkdir -p /opt/f1-dashboard && cd /opt/f1-dashboard
 
-# Récupérer le compose de prod (remplacer YOUR_GITHUB_USERNAME par votre pseudo GitHub en minuscules)
+# Récupérer le compose de prod (remplacer YOUR_GITHUB_USERNAME)
 curl -O https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/F1-Live-Dashboard/main/docker-compose.prod.yml
 
 # Authentification ghcr.io
@@ -106,8 +111,6 @@ echo YOUR_GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password
 # Lancer
 docker compose -f docker-compose.prod.yml up -d
 ```
-
-> Le `docker-compose.prod.yml` référence les images `ghcr.io/YOUR_GITHUB_USERNAME/f1-dashboard-backend:latest` et `ghcr.io/YOUR_GITHUB_USERNAME/f1-dashboard-frontend:latest`. Pensez à adapter les noms d'images à votre dépôt.
 
 **Mise à jour après un push :**
 
@@ -121,8 +124,6 @@ docker compose -f docker-compose.prod.yml up -d --remove-orphans
 
 ```bash
 sudo apt install nginx certbot python3-certbot-nginx -y
-
-# Adapter nginx/nginx.conf avec votre domaine, puis :
 sudo cp /opt/f1-dashboard/nginx/nginx.conf /etc/nginx/sites-available/f1-dashboard
 sudo ln -s /etc/nginx/sites-available/f1-dashboard /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
@@ -137,97 +138,98 @@ sudo certbot --nginx -d votre-domaine.example.com
 
 | Méthode | Route                     | Description                                       |
 |---------|---------------------------|---------------------------------------------------|
-| GET     | `/`                       | Informations générales sur l'API                  |
 | GET     | `/standings/drivers`      | Classement pilotes (paramètre `season` optionnel) |
 | GET     | `/standings/constructors` | Classement constructeurs                          |
 
 ### Calendrier & Résultats (Jolpica)
 
-| Méthode | Route        | Description                                                    |
-|---------|--------------|----------------------------------------------------------------|
-| GET     | `/race/next` | Prochaine course : FP1/FP2/FP3, qualifs, sprint, course + compte à rebours |
-| GET     | `/race/last` | Résultats complets de la dernière course (podium + classement) |
+| Méthode | Route                | Description                                                              |
+|---------|----------------------|--------------------------------------------------------------------------|
+| GET     | `/race/next`         | Prochaine course : sessions, compte à rebours, total manches saison      |
+| GET     | `/race/last`         | Résultats de la dernière course disputée                                 |
+| GET     | `/race/schedule`     | Calendrier complet de la saison (toutes les courses, passées et futures) |
+| GET     | `/race/{round}`      | Résultats d'une manche spécifique (ex: `/race/5`)                        |
 
 ### Télémétrie OpenF1
 
-| Méthode | Route                                      | Description                                                          |
-|---------|--------------------------------------------|----------------------------------------------------------------------|
-| GET     | `/telemetry/sessions`                      | Sessions disponibles (filtres : `year`, `session_type`)              |
-| GET     | `/telemetry/drivers/{session_key}`         | Pilotes d'une session                                                |
-| GET     | `/telemetry/{session_key}/{driver_number}` | Données voiture échantillonnées (`sample_size` 10–2000, mode uniform/tail) |
+| Méthode | Route                                      | Description                                                              |
+|---------|--------------------------------------------|--------------------------------------------------------------------------|
+| GET     | `/telemetry/sessions`                      | Sessions disponibles (filtres : `year`, `session_type`)                  |
+| GET     | `/telemetry/drivers/{session_key}`         | Pilotes d'une session                                                    |
+| GET     | `/telemetry/{session_key}/{driver_number}` | Données voiture (`sample_size` 10–2000, mode `uniform` ou `tail`)        |
+| WS      | `/ws/telemetry/{session_key}/{driver_number}` | Flux WebSocket temps réel (sessions en cours)                         |
 
-### Stratégie Pneumatiques OpenF1
+### Stratégie Pneumatiques
 
-| Méthode | Route                                  | Description                                             |
-|---------|----------------------------------------|---------------------------------------------------------|
-| GET     | `/tyres/{session_key}/{driver_number}` | Stints d'un pilote (composé, couleur, tours)            |
-| GET     | `/tyres/{session_key}`                 | Stints de tous les pilotes (pour le Gantt multi-pilotes) |
+| Méthode | Route                                  | Description                                               |
+|---------|----------------------------------------|-----------------------------------------------------------|
+| GET     | `/tyres/{session_key}/{driver_number}` | Stints d'un pilote (composé, tours, âge pneu)             |
+| GET     | `/tyres/{session_key}`                 | Stints de tous les pilotes (Gantt multi-pilotes)           |
 
-### Positions GPS OpenF1
+### Positions GPS
 
-| Méthode | Route                                     | Description                                                          |
-|---------|-------------------------------------------|----------------------------------------------------------------------|
-| GET     | `/location/{session_key}`                 | Snapshot de la dernière position GPS de tous les pilotes             |
-| GET     | `/location/{session_key}/{driver_number}` | Tracé GPS consécutif (contour circuit, paramètre `sample_size`)      |
+| Méthode | Route                                     | Description                                               |
+|---------|-------------------------------------------|-----------------------------------------------------------|
+| GET     | `/location/{session_key}`                 | Snapshot dernière position GPS de tous les pilotes        |
+| GET     | `/location/{session_key}/{driver_number}` | Tracé GPS (contour circuit, paramètre `sample_size`)      |
 
 ### Exemples
 
 ```
-GET /standings/drivers?season=2026
+GET /standings/drivers?season=2025
+GET /race/schedule
+GET /race/7
 GET /race/next
-GET /telemetry/sessions?year=2026&session_type=Race
+GET /telemetry/sessions?year=2025&session_type=Race
 GET /telemetry/11234/1?sample_size=1000&mode=uniform
-GET /tyres/11234/1
 GET /tyres/11234
-GET /location/11234
-GET /location/11234/1?sample_size=500
+GET /location/11234/1?sample_size=800
 ```
 
 ---
 
 ## Fonctionnalités du Dashboard
 
-### 🏆 Classement Pilotes
-- Graphique Plotly horizontal : top 10 pilotes avec couleurs officielles des écuries
+### Classement Pilotes & Constructeurs
+- KPIs : saison, manche actuelle / total de la saison, leader, prochain GP
+- Compte à rebours vers la prochaine session (FP1 / Qualifs / Sprint / Course)
+- Podium stylisé de la dernière course (or · argent · bronze) avec effet de marche
+- Graphique horizontal top 10 (Chart.js) avec couleurs officielles des écuries
 - Tableau complet du classement saison
 
-### 🏗 Classement Constructeurs
-- Graphique Plotly horizontal avec couleurs équipes
-- Tableau complet
+### Résultats de Courses
+- Sélecteur de course : toutes les manches disputées de la saison
+- Podium et tableau complet pour chaque course sélectionnée
+- Informations : position de départ, tours, temps / statut, points, meilleur tour
 
-### 📅 Prochaine Course (Hero section)
-- Nom du Grand Prix, circuit, pays
-- Programme complet du weekend : **FP1 · FP2 · FP3** · Qualifications · Sprint (si applicable) · Course
-- Compte à rebours vers la session imminente (jours / heures / minutes)
+### Télémétrie
+- Sélection par année → meeting → session → pilote
+- Mode **Historique** (uniform) pour les sessions terminées
+- Mode **Temps réel** (WebSocket) pour les sessions en cours
+- Graphiques Chart.js : vitesse · RPM · rapport · gaz / frein
+- Badge pneu actuel mis à jour en temps réel
+- Stratégie pneumatiques : stints individuels + Gantt multi-pilotes
 
-### 🏁 Derniers Résultats
-- Podium stylisé (or · argent · bronze) avec couleurs d'équipe
-- Tableau complet de la course dans un expandeur
+### Circuit GPS
+- Tracé canvas 2D normalisé (ratio d'aspect préservé, Y inversé)
+- Numéros de virages officiels auto-détectés depuis la courbure du tracé GPS, calibrés sur les comptages officiels du calendrier 2025 (23 circuits)
+- Position en temps réel de tous les pilotes (points colorés par écurie)
+- Cache SQLite pour le tracé (données statiques par session)
 
-### 📡 Télémétrie (Analyse complète)
-- Filtre automatique sur la saison en cours, sélection par défaut sur la course la plus récente
-- Mode **Course complète (uniform)** activé automatiquement pour les sessions terminées (défaut 1 000 pts)
-- Mode **Temps réel (tail)** pour les sessions en direct
-- Graphique Plotly 4 sous-figures : **vitesse** (+ overlay DRS) · **RPM** · **rapport** · **accélérateur / frein**
-- Statistiques rapides : vitesse max/moy, RPM max, rapport max, points DRS actifs
+---
 
-### 🔴 Vue Live — Jauge & Temps Réel
-- **Rafraîchissement automatique toutes les 5 secondes** (`@st.fragment`) activable via toggle
-- Graphique bi-axe **Vitesse (km/h) / RPM** avec marqueurs DRS
-- **Jauge circulaire** du rapport de boîte actuel (0–8), colorée par écurie
-- **Badge pneu** : cercle coloré Pirelli avec abréviation (S/M/H/I/W) et effet glow
-- Bande de valeurs instantanées : vitesse · RPM · gaz · frein · DRS
+## Cache SQLite
 
-### 🗺 Positions sur le Circuit
-- Snapshot de la dernière position GPS des 22 pilotes, colorés par écurie
-- Tracé du circuit en arrière-plan (points GPS **consécutifs** d'un même tour, pas d'interpolation)
-- Cache 24 h pour le tracé circuit (données statiques)
-- Tableau expandable des coordonnées complètes
+| Table             | Contenu                                             | Invalidation               |
+|-------------------|-----------------------------------------------------|----------------------------|
+| `telemetry_cache` | Métadonnées des télémétries mises en cache          | Si dernier point < 2 h     |
+| `telemetry_points`| Points voiture (speed, rpm, gear, throttle, brake)  | Avec le cache parent       |
+| `car_path_cache`  | Métadonnées du tracé circuit                        | Jamais (données statiques) |
+| `car_path_points` | Coordonnées GPS (x, y, z)                           | Jamais                     |
+| `stints_cache`    | Métadonnées des stints                              | Après complétion session    |
+| `tyre_stints`     | Stints individuels (composé, tours, âge)            | Avec le cache parent       |
 
-### 🛞 Stratégie Pneumatiques
-- Stints individuels du pilote sélectionné (composé, tours effectués, âge pneu)
-- Gantt multi-pilotes : tous les drivers en un seul graphique
-- Couleurs officielles Pirelli : Soft (rouge) · Medium (jaune) · Hard (blanc) · Inter (vert) · Wet (bleu)
+Volume Docker : `./data:/app/data` (dev) ou volume nommé `f1_data` (prod).
 
 ---
 
@@ -242,13 +244,17 @@ GET /location/11234/1?sample_size=500
 
 ## Notes techniques
 
-- **OpenF1 — authentification (live)** : l’API OpenF1 peut répondre **401 Unauthorized** sans jeton (notamment pendant une session en direct). Configurez le **backend** avec l’un des deux modes documentés sur [openf1.org/auth](https://openf1.org/auth.html) :
-  - **`OPENF1_USERNAME` + `OPENF1_PASSWORD`** : le backend obtient un jeton OAuth2 sur `https://api.openf1.org/token` et le renouvelle avant expiration (environ 1 h).
-  - **`OPENF1_ACCESS_TOKEN`** : jeton Bearer fixe (à renouveler manuellement ou par script lorsque OpenF1 expire le token).
-  - Avec Docker Compose, définissez ces variables dans un fichier `.env` à côté du `docker-compose*.yml` ou exportez-les avant `docker compose up`.
-- **Ports** : backend sur `9797`, frontend sur `9798`. En Docker, la variable `API_BASE_URL=http://backend:9797` est injectée dans le conteneur frontend via docker-compose.
-- **Rate-limiting OpenF1** : `/location` refuse les requêtes sans `driver_number`. Le backend effectue jusqu'à 21 appels en parallèle (max 3 workers) avec 3 passes de retry automatique.
-- **Volumes de données** : `/car_data` et `/location` retournent ~32 000 points par pilote par session. Les données sont sous-échantillonnées avant renvoi (télémétrie : 10–2 000 pts ; tracé circuit : points consécutifs d'un tour).
-- **Cache Streamlit** : tracé circuit 24 h · télémétrie 60 s · positions GPS 2 min · classements 5 min. Le bouton "Charger" n'invalide que les caches de télémétrie (pas le tracé circuit).
-- **Vue Live** : utilise `@st.fragment(run_every="5s")` (Streamlit ≥ 1.37) — seul le fragment se recharge, pas la page entière. Cache `fetch_live_telemetry` TTL = 5 s.
-- **CI/CD** : GitHub Actions build les images Docker et les publie sur `ghcr.io` à chaque push sur `main`. Les noms d'images sont normalisés en minuscules (contrainte Docker).
+- **Authentification OpenF1 (live)** : sans jeton, l'API OpenF1 renvoie 401 pendant les sessions en direct. Configurez le backend via variables d'environnement :
+  - `OPENF1_USERNAME` + `OPENF1_PASSWORD` — le backend obtient un token OAuth2 et le renouvelle automatiquement (~1 h)
+  - `OPENF1_ACCESS_TOKEN` — token Bearer fixe
+  - Avec Docker Compose, définissez-les dans un fichier `.env` à côté du `docker-compose*.yml`
+
+- **WebSocket live** : le bridge MQTT (`live_mqtt_bridge.py`) relaye les données OpenF1 temps réel vers le client via `/ws/telemetry/{session_key}/{driver_number}`.
+
+- **Numéros de virages** : extraits automatiquement depuis le tracé GPS multi-tours (premier tour isolé par détection de retour au point de départ). Les comptages officiels par circuit (`circuit_turns.js`) permettent de calibrer la détection et d'assurer le bon nombre de virages numérotés. Le virage T1 est positionné après la plus longue ligne droite (approximation de la ligne droite principale).
+
+- **Tracé circuit** : le tracé GPS couvre ~6 tours des 15 premières minutes de session. Le `closePath()` a été supprimé pour éviter la ligne droite parasite entre le dernier point GPS et le premier.
+
+- **Ports** : uniquement le port `9797` (backend + SPA). Plus de service frontend séparé.
+
+- **CI/CD** : GitHub Actions build l'image Docker du backend et la publie sur `ghcr.io` à chaque push sur `main`.

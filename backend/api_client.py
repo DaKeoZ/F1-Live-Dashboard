@@ -20,6 +20,8 @@ from models import (
     LastRaceResponse,
     NextRaceResponse,
     RaceResultEntry,
+    RaceScheduleEntry,
+    SeasonScheduleResponse,
     SessionInfo,
 )
 
@@ -132,7 +134,7 @@ def get_next_race() -> NextRaceResponse | None:
     if next_race_raw is None:
         return None
 
-    return _parse_next_race(next_race_raw, now_utc)
+    return _parse_next_race(next_race_raw, now_utc, total_rounds=len(races))
 
 
 def _find_next_race(races: list[dict], now_utc: datetime) -> dict | None:
@@ -181,7 +183,7 @@ def _build_countdown(sessions: dict[str, datetime], now_utc: datetime) -> Countd
     )
 
 
-def _parse_next_race(raw: dict, now_utc: datetime) -> NextRaceResponse:
+def _parse_next_race(raw: dict, now_utc: datetime, total_rounds: int | None = None) -> NextRaceResponse:
     """Convertit une entrée brute de course en NextRaceResponse avec compte à rebours."""
     circuit_raw = raw["Circuit"]
     loc_raw = circuit_raw["Location"]
@@ -241,6 +243,7 @@ def _parse_next_race(raw: dict, now_utc: datetime) -> NextRaceResponse:
     return NextRaceResponse(
         season=raw["season"],
         round=int(raw["round"]),
+        total_rounds=total_rounds,
         race_name=raw["raceName"],
         circuit=circuit,
         fp1=fp1,
@@ -317,6 +320,40 @@ def _parse_last_race(raw: dict) -> LastRaceResponse:
         date=raw["date"],
         results=[_parse_result_entry(r) for r in raw.get("Results", [])],
     )
+
+
+def get_season_schedule(season: str = "current") -> SeasonScheduleResponse:
+    """Retourne le calendrier complet d'une saison (toutes les courses, passées et futures)."""
+    url = f"{BASE_URL}/{season}.json"
+    data = _get(url)
+    table = data["MRData"]["RaceTable"]
+    races_raw: list[dict] = table.get("Races", [])
+
+    entries = [
+        RaceScheduleEntry(
+            round=int(r["round"]),
+            race_name=r["raceName"],
+            circuit_name=r["Circuit"]["circuitName"],
+            country=r["Circuit"]["Location"]["country"],
+            date=r["date"],
+        )
+        for r in races_raw
+    ]
+    return SeasonScheduleResponse(
+        season=table.get("season", season),
+        total_rounds=len(entries),
+        races=entries,
+    )
+
+
+def get_race_results(round_number: int, season: str = "current") -> LastRaceResponse | None:
+    """Retourne les résultats complets d'une course spécifique par numéro de manche."""
+    url = f"{BASE_URL}/{season}/{round_number}/results.json"
+    data = _get(url)
+    races: list[dict] = data["MRData"]["RaceTable"].get("Races", [])
+    if not races:
+        return None
+    return _parse_last_race(races[0])
 
 
 def get_constructor_standings(season: str = "current") -> ConstructorStandingsResponse:

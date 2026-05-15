@@ -156,8 +156,7 @@ export async function renderStandings(container, type = 'drivers') {
       </div>
       <div class="kpi-card">
         <div class="kpi-label">Manche</div>
-        <div class="kpi-value">${standings?.round ?? '—'}</div>
-        <div class="kpi-sub">/${nextRace?.round ? nextRace.round - 1 : '—'}</div>
+        <div class="kpi-value">${standings?.round ?? '—'}/${nextRace?.total_rounds ?? '?'}</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-label">Leader</div>

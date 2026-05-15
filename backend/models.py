@@ -114,6 +114,7 @@ class NextRaceResponse(BaseModel):
 
     season: str
     round: int
+    total_rounds: int | None = Field(None, description="Nombre total de courses dans la saison")
     race_name: str
     circuit: Circuit
     fp1: SessionInfo | None = Field(None, description="Essais libres 1")
@@ -127,8 +128,26 @@ class NextRaceResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Résultats de course
+# Calendrier & résultats de course
 # ---------------------------------------------------------------------------
+
+
+class RaceScheduleEntry(BaseModel):
+    """Une course du calendrier saison."""
+
+    round: int
+    race_name: str
+    circuit_name: str
+    country: str
+    date: str  # "YYYY-MM-DD"
+
+
+class SeasonScheduleResponse(BaseModel):
+    """Calendrier complet d'une saison."""
+
+    season: str
+    total_rounds: int
+    races: list[RaceScheduleEntry]
 
 
 class RaceResultEntry(BaseModel):

@@ -321,6 +321,7 @@ async function loadTelemetryView(sessionKey, driverNumber, session, driverMap) {
   // Circuit path
   if (pathResult.status === 'fulfilled') {
     _circuit.setPath(pathResult.value.path || []);
+    _circuit.setCircuit(session?.circuit_short_name || null);
   }
 
   // Tyre strategy

@@ -4,8 +4,9 @@
 
 import { renderStandings } from './pages/standings.js';
 import { renderTelemetry, destroyTelemetry } from './pages/telemetry.js';
+import { renderResultsPage } from './pages/results.js';
 
-const PAGES = ['standings', 'constructors', 'telemetry'];
+const PAGES = ['standings', 'constructors', 'results', 'telemetry'];
 
 const state = {
   page: 'standings',
@@ -49,6 +50,8 @@ async function navigate(page) {
 
   if (page === 'telemetry') {
     await renderTelemetry(container);
+  } else if (page === 'results') {
+    await renderResultsPage(container);
   } else {
     await renderStandings(container, page === 'constructors' ? 'constructors' : 'drivers');
   }

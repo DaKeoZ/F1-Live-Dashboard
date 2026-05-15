@@ -50,6 +50,14 @@ export async function fetchTyreStints(sessionKey) {
   return get(`/tyres/${sessionKey}`);
 }
 
+export async function fetchRaceSchedule(season = 'current') {
+  return get(`/race/schedule?season=${season}`);
+}
+
+export async function fetchRaceResults(round, season = 'current') {
+  return get(`/race/${round}?season=${season}`);
+}
+
 export async function fetchLiveCapable() {
   try { return get('/telemetry/live-capable'); }
   catch { return { live_mqtt: false }; }

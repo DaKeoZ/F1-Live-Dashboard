@@ -12,7 +12,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 import httpx
 
-from api_client import get_constructor_standings, get_driver_standings, get_last_race_results, get_next_race
+from api_client import (
+    get_constructor_standings,
+    get_driver_standings,
+    get_last_race_results,
+    get_next_race,
+    get_race_results,
+    get_season_schedule,
+)
 from database import init_db
 from models import (
     AllDriversPositionResponse,
@@ -24,6 +31,7 @@ from models import (
     NextRaceResponse,
     OpenF1Driver,
     OpenF1Session,
+    SeasonScheduleResponse,
     TelemetryResponse,
     TyreStrategyResponse,
 )
@@ -160,6 +168,14 @@ def last_race_results():
         _handle_httpx_errors(exc)
 
 
+@app.get("/race/schedule", response_model=SeasonScheduleResponse)
+def race_schedule(season: str = _SEASON_QUERY):
+    try:
+        return get_season_schedule(season=season)
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        _handle_httpx_errors(exc)
+
+
 # ── Télémétrie OpenF1 ─────────────────────────────────────────────────────────
 
 @app.get("/telemetry/live-capable")
@@ -238,6 +254,18 @@ def next_race():
         result = get_next_race()
         if result is None:
             raise HTTPException(status_code=404, detail="Aucune prochaine course trouvée — saison terminée.")
+        return result
+    except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+        _handle_httpx_errors(exc)
+
+
+# Défini en dernier parmi les routes /race/* pour ne pas masquer les routes littérales ci-dessus
+@app.get("/race/{round_number}", response_model=LastRaceResponse)
+def race_results(round_number: int, season: str = _SEASON_QUERY):
+    try:
+        result = get_race_results(round_number=round_number, season=season)
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"Aucun résultat pour la manche {round_number}.")
         return result
     except (httpx.HTTPStatusError, httpx.RequestError) as exc:
         _handle_httpx_errors(exc)

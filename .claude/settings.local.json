@@ -3,7 +3,9 @@
     "allow": [
       "Bash(Remove-Item -Recurse -Force \"C:\\\\Users\\\\Aurelien\\\\Desktop\\\\PERSO\\\\F1-Live-Dashboard\\\\frontend\")",
       "Bash(Write-Output \"Done\")",
-      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\Aurelien\\\\Desktop\\\\PERSO\\\\F1-Live-Dashboard\\\\backend\" | Where-Object { $_.Name -notlike '__pycache__' } | Select-Object Name)"
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\Aurelien\\\\Desktop\\\\PERSO\\\\F1-Live-Dashboard\\\\backend\" | Where-Object { $_.Name -notlike '__pycache__' } | Select-Object Name)",
+      "Bash(python -c ' *)",
+      "Bash(node -e ' *)"
     ]
   }
 }
